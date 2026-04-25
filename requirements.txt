@@ -1,0 +1,10 @@
+flask
+flask-sqlalchemy
+flask-limiter
+werkzeug
+gunicorn
+psycopg2-binary
+requests
+flask-socketio
+python-socketio
+pywebpush
