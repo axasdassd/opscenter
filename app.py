@@ -30,6 +30,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8601658580:AAEF_qP8L-
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6797616764")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_NOTIFY_USER_ID = os.environ.get("SLACK_NOTIFY_USER_ID", "")  # Single Slack user to receive all notifications
 
 # VAPID keys for Web Push
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
@@ -188,6 +189,12 @@ def send_slack_dm(slack_user_id, text, blocks=None):
     except Exception as ex:
         print(f"Slack DM failed: {ex}")
         return False
+
+
+def notify_slack(message):
+    """Send notification to configured Slack user."""
+    if SLACK_NOTIFY_USER_ID:
+        send_slack_dm(SLACK_NOTIFY_USER_ID, message)
 
 
 def send_telegram_alert(action, filename, lat=None, lng=None, timestamp=None):
@@ -702,6 +709,16 @@ def submit():
     )
     db.session.add(log)
     db.session.commit()
+    # Send Slack notification
+    try:
+        distance = e_m - s_m
+        notify_slack(f"""📊 Daily Telemetry Complete
+Operator: {session['username']}
+Mileage: {s_m} → {e_m} ({distance} mi)
+Shift: {f.get('start_shift_time')} - {f.get('end_shift_time')}
+All photos uploaded""")
+    except Exception as e:
+        print(f"Slack notification error: {e}")
     trigger_transmission_check(session["user_id"])
     return render_template_string(SUCCESS_HTML)
 
@@ -733,6 +750,20 @@ def break_action():
     db.session.add(brk)
     log_event(f"{action} break by {session.get('username', 'unknown')} at {timestamp} [{lat}, {lng}]")
     db.session.commit()
+    # Send Slack notification
+    try:
+        if action == "Start":
+            notify_slack(f"""☕ Break Started
+Operator: {session['username']}
+Time: {timestamp.split(' ')[1]}
+Location: {lat}, {lng}""")
+        else:
+            notify_slack(f"""🏁 Break Ended
+Operator: {session['username']}
+Time: {timestamp.split(' ')[1]}
+Location: {lat}, {lng}""")
+    except Exception as e:
+        print(f"Slack notification error: {e}")
     if action == "End":
         trigger_transmission_check(session['user_id'])
     return redirect(url_for("op"))
@@ -761,6 +792,14 @@ def submit_eta():
     db.session.add(eta_record)
     log_event(f"ETA photo submitted by {session.get('username', 'unknown')} at {timestamp} [{lat}, {lng}]")
     db.session.commit()
+    # Send Slack notification
+    try:
+        notify_slack(f"""📍 ETA Location Submitted
+Operator: {session['username']}
+Time: {timestamp.split(' ')[1]}
+Location: {lat}, {lng}""")
+    except Exception as e:
+        print(f"Slack notification error: {e}")
     trigger_transmission_check(session['user_id'])
     return redirect(url_for("op"))
 
