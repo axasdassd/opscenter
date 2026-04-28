@@ -584,41 +584,12 @@ def init_db():
                     """))
                     if not result.fetchone():
                         conn.execute(db.text("ALTER TABLE \"user\" ADD COLUMN slack_user_id VARCHAR(50)"))
-                    # Create slack_notification_recipients table
-                    result = conn.execute(db.text("""
-                        SELECT table_name FROM information_schema.tables 
-                        WHERE table_name = 'slack_notification_recipient'
-                    """))
-                    if not result.fetchone():
-                        conn.execute(db.text("""
-                            CREATE TABLE slack_notification_recipient (
-                                id SERIAL PRIMARY KEY,
-                                slack_user_id VARCHAR(50) NOT NULL,
-                                name VARCHAR(80),
-                                is_active BOOLEAN DEFAULT TRUE,
-                                created_by_admin_id INTEGER NOT NULL,
-                                created_at VARCHAR(30) DEFAULT CURRENT_TIMESTAMP
-                            )
-                        """))
                 else:
                     # SQLite
                     result = conn.execute(db.text("PRAGMA table_info(user)"))
                     columns = [row[1] for row in result.fetchall()]
                     if 'slack_user_id' not in columns:
                         conn.execute(db.text("ALTER TABLE user ADD COLUMN slack_user_id VARCHAR(50)"))
-                    # Create slack_notification_recipients table for SQLite
-                    result = conn.execute(db.text("SELECT name FROM sqlite_master WHERE type='table' AND name='slack_notification_recipient'"))
-                    if not result.fetchone():
-                        conn.execute(db.text("""
-                            CREATE TABLE slack_notification_recipient (
-                                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                                slack_user_id TEXT NOT NULL,
-                                name TEXT,
-                                is_active INTEGER DEFAULT 1,
-                                created_by_admin_id INTEGER NOT NULL,
-                                created_at TEXT DEFAULT CURRENT_TIMESTAMP
-                            )
-                        """))
                 conn.commit()
         except Exception as e:
             print(f"Migration info: {e}")
@@ -1524,7 +1495,7 @@ DRAWER_HTML = """
                             <p class="text-[10px] text-gray-500 font-mono mt-1 uppercase">Role: {{ u.role }} | Last: {{ u.last_login }}</p>
                             {% if u.slack_user_id %}
                             <span class="slack-badge mt-2 inline-flex">
-                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zM6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313zM8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zM8.834 6.313a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312zM18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zM17.688 8.834a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.523 2.522v6.312zM15.165 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.165 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zM15.165 17.688a2.527 2.527 0 0 1-2.52-2.523 2.526 2.526 0 0 1 2.52-2.52h6.313A2.527 2.527 0 0 1 24 15.165a2.528 2.528 0 0 1-2.522 2.523h-6.313z"/></svg>
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="currentColor"><path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.527 2.527 0 0 1 15.165 0a2.528 2.528 0 0 1 2.521-2.52h2.52v2.52zM6.313 15.165a2.528 2.528 0 0 1 2.521-2.52 2.527 2.527 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1 2.521 2.522v-6.313zM18.956 8.834a2.528 2.528 0 0 1 2.523 2.526 2.526 0 0 1 24 8.834a2.528 2.528 0 0 1 2.523 2.522h-6.312zM15.165 17.688a2.528 2.528 0 0 1 2.523 2.527 2.527 0 0 1 24 15.165a2.527 2.527 0 0 1 2.52-2.522v6.312zM17.688 17.688a2.528 2.528 0 0 1 2.523 2.527 2.527 0 0 1 24 15.165a2.527 2.527 0 0 1 2.52-2.522v6.312zM15.165 17.688a2.528 2.528 0 0 1 2.523 2.527 2.527 0 0 1 24 15.165a2.527 2.527 0 0 1 2.52-2.522v6.312z"/></svg>
                                 Slack Connected
                             </span>
                             {% endif %}
