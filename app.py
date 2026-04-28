@@ -208,15 +208,15 @@ def notify_slack(message, filename=None):
 
 
 def send_break_reminder(user_id, username, slack_user_id):
-    """Send break reminders at 1 and 2 minutes."""
+    """Send break reminders at 20 and 30 minutes."""
     from threading import Timer
 
     def first_reminder():
         with app.app_context():
             if slack_user_id:
                 message = f"""⏰ Break Reminder
-Hey {username}! Your 2-minute break is almost over.
-You have 1 minute left. Please make sure to sign your end break at the opscenter platform before returning to work."""
+Hey {username}! Your 30-minute break is almost over.
+You have 10 minutes left. Please make sure to sign your end break at the opscenter platform before returning to work."""
                 send_slack_dm(slack_user_id, message)
                 print(f"First break reminder sent to {username}")
             else:
@@ -232,7 +232,7 @@ You have 1 minute left. Please make sure to sign your end break at the opscenter
 
             if break_not_ended and slack_user_id:
                 message = f"""⚠️ BREAK OVER
-Hey {username}! Your 2-minute break has ended.
+Hey {username}! Your 30-minute break has ended.
 You are now over your break time. Please END YOUR BREAK immediately on the opscenter platform.
 Thank you!"""
                 send_slack_dm(slack_user_id, message)
@@ -240,10 +240,10 @@ Thank you!"""
             elif not break_not_ended:
                 print(f"Break already ended for {username}, no second reminder sent")
 
-    # Schedule reminders at 60s (1 min) and 120s (2 min)
-    Timer(60.0, first_reminder).start()
-    Timer(120.0, second_reminder).start()
-    print(f"Break reminders scheduled for {username} at 1 and 2 minutes")
+    # Schedule reminders at 1200s (20 min) and 1800s (30 min)
+    Timer(1200.0, first_reminder).start()
+    Timer(1800.0, second_reminder).start()
+    print(f"Break reminders scheduled for {username} at 20 and 30 minutes")
 
 
 def notify_slack_with_files(message, filenames):
