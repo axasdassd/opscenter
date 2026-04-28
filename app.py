@@ -30,7 +30,6 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8601658580:AAEF_qP8L-
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6797616764")
 
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_SIGNING_SECRET = os.environ.get("SLACK_SIGNING_SECRET", "")
 
 # VAPID keys for Web Push
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
@@ -191,121 +190,6 @@ def send_slack_dm(slack_user_id, text, blocks=None):
         return False
 
 
-def verify_slack_request(timestamp, signature, body):
-    """Verify Slack request signature."""
-    if not SLACK_SIGNING_SECRET:
-        return False
-    import hmac
-    import hashlib
-    import time
-    
-    # Check timestamp is within 5 minutes
-    if abs(time.time() - int(timestamp)) > 300:
-        return False
-    
-    # Create signature
-    sig_basestring = f"v0:{timestamp}:{body}"
-    my_signature = 'v0=' + hmac.new(
-        SLACK_SIGNING_SECRET.encode(),
-        sig_basestring.encode(),
-        hashlib.sha256
-    ).hexdigest()
-    
-    return hmac.compare_digest(my_signature, signature)
-
-
-def handle_slack_message(user_id, text):
-    """Handle incoming Slack message and return response."""
-    import re
-    
-    # Find user by Slack User ID
-    user = User.query.filter_by(slack_user_id=user_id).first()
-    if not user:
-        return "Sorry, I couldn't find your account in OpsCenter. Please contact your admin."
-    
-    text = text.strip().lower()
-    
-    # Command patterns
-    if text in ["help", "status", "info"]:
-        return get_user_status(user)
-    elif text == "address":
-        return get_user_address(user)
-    elif text.startswith("break"):
-        return handle_break_command(user, text)
-    elif text == "eta":
-        return handle_eta_request(user)
-    else:
-        return """Available commands:
-• *help* - Show your current status
-• *address* - View your assigned address
-• *break start* - Start your break
-• *break end* - End your break  
-• *eta* - Get location for ETA photo
-• *status* - Show today's completion status"""
-
-
-def get_user_status(user):
-    """Get user's current status."""
-    completion = check_daily_completion(user.id)
-    status_parts = [
-        f"*{user.username}* - OpsCenter Status",
-        f"Today's Progress:",
-        f"• Daily Log: {'✅ Completed' if completion['has_log'] else '❌ Pending'}",
-        f"• Break Start: {'✅ Completed' if completion['has_break_start'] else '❌ Pending'}",
-        f"• Break End: {'✅ Completed' if completion['has_break_end'] else '❌ Pending'}",
-        f"• ETA: {'✅ Completed' if completion['has_eta'] else '❌ Pending'}",
-        f"• Overall: {'✅ Complete' if completion['is_complete'] else '⏳ In Progress'}"
-    ]
-    return "\n".join(status_parts)
-
-
-def get_user_address(user):
-    """Get user's assigned address."""
-    address = Address.query.filter_by(assigned_op_id=user.id).first()
-    if address:
-        return f"*Your Assigned Address:*\n{address.address_text}\n\n*Assigned:* {address.timestamp}"
-    return "You don't have any address assignments currently."
-
-
-def handle_break_command(user, text):
-    """Handle break-related commands."""
-    if text == "break start":
-        # Check if already on break
-        breaks_today = Break.query.filter(
-            Break.user_id == user.id,
-            Break.timestamp.like(f"{datetime.now().strftime('%Y-%m-%d')}%")
-        ).all()
-        has_start = any(b.action == 'Start' for b in breaks_today)
-        has_end = any(b.action == 'End' for b in breaks_today)
-        
-        if has_start and not has_end:
-            return "You're already on break! Use `break end` when you're done."
-        
-        return "To start your break, please use the OpsCenter web interface and take a photo as required."
-    
-    elif text == "break end":
-        # Check if break is active
-        breaks_today = Break.query.filter(
-            Break.user_id == user.id,
-            Break.timestamp.like(f"{datetime.now().strftime('%Y-%m-%d')}%")
-        ).all()
-        has_start = any(b.action == 'Start' for b in breaks_today)
-        has_end = any(b.action == 'End' for b in breaks_today)
-        
-        if not has_start or has_end:
-            return "You're not currently on break. Use `break start` first."
-        
-        return "To end your break, please use the OpsCenter web interface and take a photo as required."
-    
-    else:
-        return "Break commands: `break start` or `break end`"
-
-
-def handle_eta_request(user):
-    """Handle ETA request."""
-    return "For ETA submission, please use the OpsCenter web interface and take a location photo as required."
-
-
 def send_telegram_alert(action, filename, lat=None, lng=None, timestamp=None):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -418,7 +302,7 @@ GPS: {log.lat or 'N/A'}, {log.lng or 'N/A'}
 
 BREAK: {break_start.timestamp.split(' ')[1][:5] if break_start else 'N/A'}-{break_end.timestamp.split(' ')[1][:5] if break_end else 'N/A'} ({break_duration})
 
-ETA: {eta.timestamp.split(' ')[1][:5] if eta else 'N/A'} | GPS: {eta.lat or 'N/A'}, {eta.lng or 'N/A' if eta else 'N/A'}
+ETA: {eta.timestamp.split(' ')[1][:5] if eta else 'N/A'} | GPS: {eta.lat or 'N/A'}, {eta.lng or 'N/A'} if eta else 'N/A'
 
 Photos: 7 attached"""
         res = requests.post(
@@ -1244,72 +1128,6 @@ def api_vapid_public_key():
     return jsonify({"key": VAPID_PUBLIC_KEY})
 
 
-@app.route("/slack/events", methods=["POST"])
-def slack_events():
-    """Handle Slack events and commands."""
-    import json
-    
-    # Get request data
-    data = request.get_data(as_text=True)
-    timestamp = request.headers.get("X-Slack-Request-Timestamp")
-    signature = request.headers.get("X-Slack-Signature")
-    
-    # Verify request signature
-    if not verify_slack_request(timestamp, signature, data):
-        return "Invalid signature", 401
-    
-    try:
-        event_data = json.loads(data)
-        
-        # Handle URL verification (Slack app setup)
-        if event_data.get("type") == "url_verification":
-            return event_data.get("challenge")
-        
-        # Handle app mentions and direct messages
-        event = event_data.get("event", {})
-        event_type = event.get("type")
-        
-        if event_type in ["app_mention", "message"]:
-            # Ignore bot messages
-            if event.get("bot_id") or event.get("subtype") == "bot_message":
-                return jsonify({"ok": True})
-            
-            # Get user info
-            user_id = event.get("user")
-            channel_id = event.get("channel")
-            text = event.get("text", "")
-            
-            # Remove bot mention from text
-            bot_user_id = None
-            for block in event.get("blocks", []):
-                if block.get("type") == "rich_text":
-                    for element in block.get("elements", []):
-                        if element.get("type") == "rich_text_section":
-                            for elem in element.get("elements", []):
-                                if elem.get("type") == "user" and elem.get("style", {}).get("bold"):
-                                    bot_user_id = elem.get("user_id")
-                                    break
-            
-            if bot_user_id:
-                # Remove bot mention from text
-                import re
-                text = re.sub(rf"<@{bot_user_id}>", "", text).strip()
-            
-            # Handle the message
-            response = handle_slack_message(user_id, text)
-            
-            # Send response
-            send_slack_dm(user_id, response)
-            
-            return jsonify({"ok": True})
-        
-        return jsonify({"ok": True})
-        
-    except Exception as e:
-        print(f"Slack event error: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
 @app.route("/sw.js")
 def service_worker():
     sw_js = """
@@ -1330,7 +1148,7 @@ self.addEventListener('push', function(event) {
 self.addEventListener('notificationclick', function(event) {
     event.notification.close();
     const url = event.notification.data && event.notification.data.url ? event.notification.data.url : '/';
-    event.waitUntil(clients.matchAll({ type: "window" }).then(function(clientList) {
+    event.waitUntil(clients.matchAll({ type: 'window' }).then(function(clientList) {
         for (let i = 0; i < clientList.length; i++) {
             if (clientList[i].url === url && 'focus' in clientList[i]) return clientList[i].focus();
         }
@@ -1999,8 +1817,512 @@ function openEditEta(id, timestamp, lat, lng, photo) {
 
 LOGIN_HTML = f"<html>{COMMON_HEAD}<body class='flex items-center justify-center min-h-screen p-6 overflow-hidden'><div class='absolute inset-0 bg-[url(\"https://www.transparenttextures.com/patterns/carbon-fibre.png\")] opacity-20'></div><div class='glass-panel p-12 rounded-[40px] w-full max-w-[440px] relative z-10 border border-white/10 shadow-2xl'><div class='text-center mb-12'><div class='w-20 h-20 bg-amber-400 rounded-3xl flex items-center justify-center text-black font-black text-4xl italic mx-auto mb-6 shadow-2xl shadow-amber-400/40'>O</div><h1 class='text-4xl font-black text-white italic uppercase tracking-tighter'>Mission<span class='text-amber-400'>Control</span></h1><p class='text-gray-500 text-xs font-bold uppercase tracking-[4px] mt-4'>System Authorization Required</p></div><form action='/login' method='POST' class='space-y-5'><div class='space-y-1'><label class='label-caps ml-2'>Identity</label><input name='username' placeholder='Operator ID' class='input-field py-4' required autofocus></div><div class='space-y-1'><label class='label-caps ml-2'>Access Code</label><input name='password' type='password' placeholder='........' class='input-field py-4' required></div><button class='btn-main w-full py-5 text-xl shadow-2xl shadow-amber-400/20 mt-6'>Authenticate</button></form></div></body></html>"
 
-# Note: The ADMIN_HTML and OP_HTML templates are very large and would exceed the token limit.
-# They should be copied from the original file or recreated as needed.
+ADMIN_HTML = f"<html>{COMMON_HEAD}<body>" + NAV_BAR + DRAWER_HTML + """
+<main class="max-w-7xl mx-auto px-6 pb-24">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+        <div class="glass-panel p-8 rounded-[2rem] relative overflow-hidden group">
+            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition"><svg class="w-16 h-16" fill="currentColor" viewBox="0 0 20 20"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"></path></svg></div>
+            <p class="label-caps text-amber-400">Total Operators</p>
+            <h3 class="text-5xl font-black text-white italic mt-2">{{ all_users|length }}</h3>
+        </div>
+        <div class="glass-panel p-8 rounded-[2rem] relative overflow-hidden group">
+            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition"><svg class="w-16 h-16" fill="currentColor" viewBox="0 0 20 20"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"></path></svg></div>
+            <p class="label-caps text-amber-400">System Mileage</p>
+            <h3 class="text-5xl font-black text-white italic mt-2">{{ total_miles }}<span class="text-xl ml-2">MI</span></h3>
+        </div>
+        <div class="glass-panel p-8 rounded-[2rem] relative overflow-hidden group">
+            <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition"><svg class="w-16 h-16" fill="currentColor" viewBox="0 0 20 20"><path d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"></path></svg></div>
+            <p class="label-caps text-amber-400">Reports Filed</p>
+            <h3 class="text-5xl font-black text-white italic mt-2">{{ log_count }}</h3>
+        </div>
+    </div>
+
+    <div class="flex flex-col lg:flex-row gap-10">
+        <div class="w-full lg:w-80 space-y-6">
+            <div class="flex items-center justify-between px-2">
+                <p class="label-caps">Log Explorer</p>
+                <a href="/export_csv" class="text-[10px] font-black text-amber-400 hover:underline">EXTRACT CSV</a>
+            </div>
+            <input type="text" id="userSearch" onkeyup="filterSidebar()" placeholder="Search Identity..." class="input-field !py-3 !text-xs font-bold border-white/10">
+            <div id="sidebarList" class="space-y-2 max-h-[600px] overflow-y-auto pr-2">
+                {% for op_name in all_op_names %}
+                <button onclick="showUserLogs(this, '{{ op_name }}')" class="sidebar-btn w-full text-left p-4 rounded-2xl hover:bg-white/5 transition flex items-center justify-between border border-transparent group">
+                    <div class="flex items-center gap-4">
+                        <div class="w-10 h-10 bg-amber-400/10 rounded-xl flex items-center justify-center text-amber-400 font-black text-sm">{{ op_name[0]|upper }}</div>
+                        <span class="text-sm font-bold truncate">{{ op_name }}</span>
+                    </div>
+                    <svg class="w-4 h-4 opacity-0 group-hover:opacity-100 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M9 5l7 7-7 7" stroke-width="3"></path></svg>
+                </button>
+                {% endfor %}
+            </div>
+            <div class="pt-8">
+                <p class="label-caps px-2 mb-4">System Events</p>
+                <div class="bg-black/30 rounded-2xl p-4 border border-white/5 h-64 overflow-y-auto space-y-3">
+                    {% for event in events %}
+                    <div class="border-l-2 border-amber-400/30 pl-3">
+                        <p class="text-[10px] text-gray-500 font-mono">{{ event.time }}</p>
+                        <p class="text-[11px] text-gray-300 font-bold leading-tight">{{ event.event }}</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+
+        <div class="flex-grow">
+            {% for op_name in all_op_names %}
+            {% set dates = grouped_logs.get(op_name, {}) %}
+            <div id="panel-{{ op_name }}" class="user-panel hidden">
+                <div class="mb-8 flex items-end justify-between border-b border-white/10 pb-6">
+                    <div>
+                        <h2 class="text-5xl font-black text-white italic uppercase tracking-tighter">{{ op_name }}</h2>
+                        <p class="text-gray-500 font-bold text-xs uppercase tracking-widest mt-2">Historical Records Archive</p>
+                    </div>
+                </div>
+                {% set all_dates = (dates.keys() | list) + (grouped_breaks.get(op_name, {}).keys() | list) + (grouped_etas.get(op_name, {}).keys() | list) + (grouped_addresses.get(op_name, {}).keys() | list) %}
+                {% set unique_dates = [] %}
+                {% for d in all_dates %}{% if d not in unique_dates %}{% set _ = unique_dates.append(d) %}{% endif %}{% endfor %}
+                {% for date in unique_dates | sort(reverse=true) %}
+                {% set logs = dates.get(date, []) %}
+                <div class="mb-6 bg-white/5 rounded-[2rem] border border-white/5 overflow-hidden shadow-xl">
+                    <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="w-full p-6 flex justify-between items-center hover:bg-white/10 transition group">
+                        <div class="flex items-center gap-4">
+                            <div class="w-10 h-10 bg-white/5 rounded-full flex items-center justify-center"><svg class="w-5 h-5 text-gray-500" fill="currentColor" viewBox="0 0 20 20"><path d="M6 2a1 1 0 00-1 1v1H4a2 2 0 00-2 2v10a2 2 0 002 2h12a2 2 0 002-2V6a2 2 0 00-2-2h-1V3a1 1 0 10-2 0v1H7V3a1 1 0 00-1-1zm0 5a1 1 0 000 2h8a1 1 0 100-2H6z"></path></svg></div>
+                            <span class="text-xl font-black text-white italic">{{ date }}</span>
+                        </div>
+                        <div class="flex items-center gap-4">
+                            {% set break_items = grouped_breaks.get(op_name, {}).get(date, []) %}
+                            {% set eta_items = grouped_etas.get(op_name, {}).get(date, []) %}
+                            {% set address_items = grouped_addresses.get(op_name, {}).get(date, []) %}
+                            <span class="bg-amber-400 text-black text-[10px] font-black px-3 py-1 rounded-full uppercase">{{ logs|length + break_items|length + eta_items|length + address_items|length }} TRANSMISSIONS</span>
+                            <svg class="w-5 h-5 text-gray-600 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M19 9l-7 7-7-7" stroke-width="3"></path></svg>
+                        </div>
+                    </button>
+                    <div class="hidden p-8 bg-black/40 border-t border-white/5 space-y-6">
+
+                        {% for log in logs %}
+                        {% set ts_local = log.submitted_at.replace(' ', 'T')[:16] %}
+                        <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl transmission-card">
+                            <div class="card-actions">
+                                <button type="button" class="act-btn act-btn-edit"
+                                  onclick="openEditLog({{ log.id }}, '{{ log.start_mileage }}', '{{ log.end_mileage }}', '{{ log.start_shift_time or '' }}', '{{ log.end_shift_time or '' }}', '{{ log.notes or '' }}', '{{ log.lat or '' }}', '{{ log.lng or '' }}', '{{ resolve_image_url(log.start_photo) }}', '{{ resolve_image_url(log.end_mileage_photo) }}', '{{ resolve_image_url(log.start_shift_photo) }}', '{{ resolve_image_url(log.end_shift_photo) }}', '{{ resolve_image_url(log.eta_img) }}')">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                    Edit
+                                </button>
+                                <form action="/delete_log/{{ log.id }}" method="POST" onsubmit="return confirm('Delete this log record?');">
+                                    <button type="submit" class="act-btn act-btn-delete">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                        Delete
+                                    </button>
+                                </form>
+                            </div>
+                            <div class="flex items-center gap-3 mb-6">
+                                <div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 20 20"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
+                                </div>
+                                <div>
+                                    <p class="label-caps !mb-0 text-amber-400">Daily Telemetry</p>
+                                    <p class="text-[10px] text-gray-500 font-mono">{{ log.submitted_at }}</p>
+                                </div>
+                                {% if log.lat %}
+                                <p class="ml-auto text-[9px] text-amber-400/40 font-mono">{{ log.lat }}, {{ log.lng }}</p>
+                                {% endif %}
+                            </div>
+                            <div class="flex flex-wrap gap-8 mb-6 pb-6 border-b border-white/5">
+                                <div>
+                                    <p class="label-caps">Odometer Start</p>
+                                    <p class="text-3xl font-mono font-bold text-white tracking-tighter">{{ log.start_mileage }}</p>
+                                </div>
+                                <div>
+                                    <p class="label-caps">Odometer End</p>
+                                    <p class="text-3xl font-mono font-bold text-white tracking-tighter">{{ log.end_mileage }}</p>
+                                </div>
+                                <div class="border-l border-white/10 pl-8">
+                                    <p class="label-caps text-amber-400">Net Distance</p>
+                                    <p class="text-4xl font-black text-amber-400 italic tracking-tighter">{{ log.end_mileage - log.start_mileage }} <span class="text-sm">MI</span></p>
+                                </div>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5">
+                                    <p class="label-caps !mb-1">Shift In</p>
+                                    <p class="text-lg font-black text-white italic">{{ log.start_shift_time }}</p>
+                                </div>
+                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5">
+                                    <p class="label-caps !mb-1">Shift Out</p>
+                                    <p class="text-lg font-black text-white italic">{{ log.end_shift_time }}</p>
+                                </div>
+                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5">
+                                    <p class="label-caps !mb-1">Notes</p>
+                                    <p class="text-sm font-bold text-gray-300 leading-snug">{{ log.notes }}</p>
+                                </div>
+                            </div>
+                            <p class="label-caps mb-3">Visuals <span class="text-gray-600">(click to open)</span></p>
+                            <div class="flex gap-3 overflow-x-auto py-1">
+                                {% set labels = ['Start Odo', 'Shift In', 'Shift Out', 'End Odo', 'ETA Proof'] %}
+                                {% for img in [log.start_photo, log.start_shift_photo, log.end_shift_photo, log.end_mileage_photo, log.eta_img] %}
+                                <div class="relative group flex-shrink-0">
+                                    <img src="{{ resolve_image_url(img) }}" class="h-28 w-28 object-cover rounded-2xl border-2 border-white/5 group-hover:border-amber-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
+                                    <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-white text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">{{ labels[loop.index0] }}</span>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endfor %}
+
+                        {% for ad in address_items %}
+                        <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl">
+                            <div class="flex items-center gap-3 mb-5">
+                                <div class="w-8 h-8 bg-blue-500/10 rounded-lg flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                                </div>
+                                <div>
+                                    <p class="label-caps !mb-0 text-blue-400">Assigned Address</p>
+                                    <p class="text-[10px] text-gray-500 font-mono">{{ ad.timestamp }}</p>
+                                </div>
+                            </div>
+                            <div class="bg-black/40 p-5 rounded-2xl border border-white/5">
+                                <p class="text-white font-bold leading-relaxed">{{ ad.address_text }}</p>
+                            </div>
+                        </div>
+                        {% endfor %}
+
+                        {% for et in eta_items %}
+                        {% set et_ts = et.timestamp.replace(' ', 'T')[:16] %}
+                        <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl transmission-card">
+                            <div class="card-actions">
+                                <button type="button" class="act-btn act-btn-edit"
+                                    onclick="openEditEta({{ et.id }}, '{{ et_ts }}', '{{ et.lat or "" }}', '{{ et.lng or "" }}', '{{ resolve_image_url(et.photo) }}')">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                    Edit
+                                </button>
+                                <form action="/delete_eta/{{ et.id }}" method="POST" onsubmit="return confirm('Delete this ETA record?');">
+                                    <button type="submit" class="act-btn act-btn-delete">
+                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                        Delete
+                                    </button>
+                                </form>
+                            </div>
+                            <div class="flex items-center gap-3 mb-5">
+                                <div class="w-8 h-8 bg-green-500/10 rounded-lg flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                                </div>
+                                <div>
+                                    <p class="label-caps !mb-0 text-green-400">ETA Confirmation</p>
+                                    <p class="text-[10px] text-gray-500 font-mono">{{ et.timestamp }}</p>
+                                </div>
+                                {% if et.lat %}
+                                <p class="ml-auto text-[9px] text-green-400/40 font-mono">{{ et.lat }}, {{ et.lng }}</p>
+                                {% endif %}
+                            </div>
+                            <div class="flex gap-3">
+                                <div class="relative group flex-shrink-0">
+                                    <img src="{{ resolve_image_url(et.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-white/5 group-hover:border-green-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
+                                    <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-green-300 text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">ETA Proof</span>
+                                </div>
+                                {% if et.lat %}
+                                <div class="flex flex-col justify-center">
+                                    <div class="bg-black/40 px-4 py-3 rounded-xl border border-white/5">
+                                        <p class="label-caps !mb-0">Location</p>
+                                        <p class="text-xs font-mono text-gray-300">{{ et.lat }}, {{ et.lng }}</p>
+                                    </div>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endfor %}
+
+                        {% set break_starts = [] %}
+                        {% set break_ends = [] %}
+                        {% for br in break_items %}
+                            {% if br.action == 'Start' %}{% set _ = break_starts.append(br) %}{% endif %}
+                            {% if br.action == 'End' %}{% set _ = break_ends.append(br) %}{% endif %}
+                        {% endfor %}
+
+                        {% if break_items|length %}
+                        <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl">
+                            <div class="flex items-center gap-3 mb-6">
+                                <div class="w-8 h-8 bg-orange-500/10 rounded-lg flex items-center justify-center">
+                                    <svg class="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+                                </div>
+                                <p class="label-caps !mb-0 text-orange-400">Break Record</p>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                {% if break_starts %}
+                                {% set bs = break_starts[0] %}
+                                {% set bs_ts = bs.timestamp.replace(' ', 'T')[:16] %}
+                                <div class="space-y-3 transmission-card">
+                                    <div class="card-actions">
+                                        <button type="button" class="act-btn act-btn-edit"
+                                            onclick="openEditBreak({{ bs.id }}, '{{ bs.action }}', '{{ bs_ts }}', '{{ bs.lat or "" }}', '{{ bs.lng or "" }}', '{{ resolve_image_url(bs.photo) }}')">
+                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                            Edit
+                                        </button>
+                                        <form action="/delete_break/{{ bs.id }}" method="POST" onsubmit="return confirm('Delete this break start record?');">
+                                            <button type="submit" class="act-btn act-btn-delete">
+                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                                Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                    <p class="label-caps text-orange-400">Break Start</p>
+                                    <p class="text-[10px] text-gray-500 font-mono">{{ bs.timestamp }}</p>
+                                    {% if bs.lat %}<p class="text-[10px] text-orange-400/50 font-mono">{{ bs.lat }}, {{ bs.lng }}</p>{% endif %}
+                                    <div class="relative group inline-block">
+                                        <img src="{{ resolve_image_url(bs.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-orange-400/20 group-hover:border-orange-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
+                                        <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-orange-300 text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">Break Start</span>
+                                    </div>
+                                </div>
+                                {% endif %}
+
+                                {% if break_ends %}
+                                {% set be = break_ends[0] %}
+                                {% set be_ts = be.timestamp.replace(' ', 'T')[:16] %}
+                                <div class="space-y-3 transmission-card">
+                                    <div class="card-actions">
+                                        <button type="button" class="act-btn act-btn-edit"
+                                            onclick="openEditBreak({{ be.id }}, '{{ be.action }}', '{{ be_ts }}', '{{ be.lat or "" }}', '{{ be.lng or "" }}', '{{ resolve_image_url(be.photo) }}')">
+                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+                                            Edit
+                                        </button>
+                                        <form action="/delete_break/{{ be.id }}" method="POST" onsubmit="return confirm('Delete this break end record?');">
+                                            <button type="submit" class="act-btn act-btn-delete">
+                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                                                Delete
+                                            </button>
+                                        </form>
+                                    </div>
+                                    <p class="label-caps text-gray-400">Break End</p>
+                                    <p class="text-[10px] text-gray-500 font-mono">{{ be.timestamp }}</p>
+                                    {% if be.lat %}<p class="text-[10px] text-gray-400/50 font-mono">{{ be.lat }}, {{ be.lng }}</p>{% endif %}
+                                    <div class="relative group inline-block">
+                                        <img src="{{ resolve_image_url(be.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-white/5 group-hover:border-amber-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
+                                        <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-white text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">Break End</span>
+                                    </div>
+                                </div>
+                                {% else %}
+                                <div class="flex items-center justify-center h-36 rounded-2xl border-2 border-dashed border-white/10">
+                                    <p class="text-xs text-gray-600 font-bold uppercase">Break still active</p>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endfor %}
+            <div id="empty-state" class="glass-panel p-32 rounded-[4rem] text-center border-dashed border-4 border-white/5">
+                <div class="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-6">
+                    <svg class="w-12 h-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-width="2"></path></svg>
+                </div>
+                <h2 class="text-2xl font-black text-gray-600 uppercase italic tracking-widest">Awaiting Identity Selection</h2>
+                <p class="text-gray-500 mt-2 font-bold uppercase text-[10px] tracking-[3px]">Select personnel from sidebar to decrypt logs</p>
+            </div>
+        </div>
+    </div>
+</main>
+<script>
+function showUserLogs(btn, username) {
+    document.querySelectorAll('.user-panel').forEach(p => p.classList.add('hidden'));
+    document.getElementById('empty-state').classList.add('hidden');
+    const panel = document.getElementById('panel-' + username);
+    if(panel) panel.classList.remove('hidden');
+    document.querySelectorAll('.sidebar-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+}
+function filterSidebar() {
+    let input = document.getElementById('userSearch').value.toLowerCase();
+    document.querySelectorAll('.sidebar-btn').forEach(btn => {
+        btn.style.display = btn.innerText.toLowerCase().includes(input) ? "flex" : "none";
+    });
+}
+</script>
+""" + EDIT_MODALS_HTML + CHAT_HTML + """
+</body></html>"""
+
+OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + """
+<main class="px-6 max-w-4xl mx-auto">
+    {% if assigned_address %}
+    <div class="glass-panel p-5 rounded-2xl mb-6 border border-white/10">
+        <div class="flex justify-between items-center">
+            <p class="text-xs font-black uppercase tracking-widest">1st Address</p>
+        </div>
+        <div class="mt-3 text-sm text-gray-300">{{ assigned_address.address_text }}</div>
+        <div class="mt-4">
+            <button type="button" onclick="triggerETA()" class="btn-main px-5 py-3 text-xs tracking-widest">ETA</button>
+        </div>
+    </div>
+    {% endif %}
+    <div class="flex justify-end items-center gap-3 mb-6">
+        {% if in_break %}
+        <button type="button" onclick="triggerBreak('End')" class="btn-main px-5 py-3 text-xs tracking-widest bg-red-500 text-white hover:bg-red-400">End Break</button>
+        {% else %}
+        <button type="button" onclick="triggerBreak('Start')" class="btn-main px-5 py-3 text-xs tracking-widest">Start Break</button>
+        {% endif %}
+    </div>
+    <div class="glass-panel p-5 rounded-2xl mb-8 border border-white/10">
+        <div class="flex justify-between items-center">
+            <p class="text-xs font-black uppercase tracking-widest">Break Status</p>
+            <span class="text-xs font-bold text-amber-300">{{ 'ON BREAK' if in_break else 'OFF BREAK' }}</span>
+        </div>
+        <div class="mt-3 text-xs text-gray-300">Latest break action: {{ break_records[0].action if break_records else 'None yet' }} at {{ break_records[0].timestamp if break_records else 'N/A' }}</div>
+        <div class="mt-4 max-h-40 overflow-y-auto">
+            {% if break_records %}
+            <table class="w-full text-xs border border-white/10 rounded-xl">
+                <thead class="bg-white/5">
+                    <tr><th class="px-2 py-1 text-left">Time</th><th class="px-2 py-1 text-left">Action</th><th class="px-2 py-1 text-left">Geo</th></tr>
+                </thead>
+                <tbody>
+                    {% for br in break_records[:8] %}
+                    <tr class="border-t border-white/10">
+                        <td class="px-2 py-1">{{ br.timestamp }}</td>
+                        <td class="px-2 py-1">{{ br.action }}</td>
+                        <td class="px-2 py-1">{{ br.lat or 'N/A' }}, {{ br.lng or 'N/A' }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p class="text-[10px] text-gray-400 mt-2">No break records yet.</p>
+            {% endif %}
+        </div>
+    </div>
+    <form id="breakForm" action="/break_action" method="POST" enctype="multipart/form-data" class="hidden">
+        <input type="hidden" id="breakAction" name="action" value="">
+        <input type="hidden" id="breakLat" name="lat" value="">
+        <input type="hidden" id="breakLng" name="lng" value="">
+        <input type="file" id="breakPhotoInput" name="photo" accept="image/*" capture="user" class="hidden" onchange="submitBreakForm()" required>
+    </form>
+    <form id="etaForm" action="/submit_eta" method="POST" enctype="multipart/form-data" class="hidden">
+        <input type="hidden" id="etaLat" name="lat" value="">
+        <input type="hidden" id="etaLng" name="lng" value="">
+        <input type="file" id="etaPhotoInput" name="photo" accept="image/*" capture="user" class="hidden" onchange="submitETAForm()" required>
+    </form>
+    <div id="breakStatus" class="text-right text-xs font-bold text-amber-400 mb-4"></div>
+
+    <div class="mb-10">
+        <h2 class="text-4xl font-black text-white italic uppercase tracking-tighter">Daily <span class="text-amber-400">Telemetry</span></h2>
+        <p class="text-gray-500 font-bold uppercase text-[10px] tracking-[2px] mt-2">Field Report Submission Module</p>
+    </div>
+    <form method="POST" action="/submit" enctype="multipart/form-data" class="glass-panel p-10 rounded-[3rem] space-y-10 shadow-2xl">
+        <input type="hidden" name="lat" id="lat">
+        <input type="hidden" name="lng" id="lng">
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-12">
+            <div class="space-y-6">
+                <div class="flex items-center gap-3 mb-2">
+                    <div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center text-amber-400 font-black italic">M</div>
+                    <p class="label-caps !mb-0">Odometer Data</p>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="label-caps !text-[9px] opacity-50">Start Value</label>
+                        <input type="number" name="start_mileage" class="input-field" placeholder="000000" required>
+                        <input type="file" name="start_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    </div>
+                    <div class="pt-4">
+                        <label class="label-caps !text-[9px] opacity-50">End Value</label>
+                        <input type="number" name="end_mileage" class="input-field" placeholder="000000" required>
+                        <input type="file" name="end_mileage_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    </div>
+                </div>
+            </div>
+            <div class="space-y-6">
+                <div class="flex items-center gap-3 mb-2">
+                    <div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center text-amber-400 font-black italic">T</div>
+                    <p class="label-caps !mb-0">Timekeeping</p>
+                </div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="label-caps !text-[9px] opacity-50">Shift Initiation</label>
+                        <input type="time" name="start_shift_time" class="input-field" required>
+                        <input type="file" name="start_shift_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    </div>
+                    <div class="pt-4">
+                        <label class="label-caps !text-[9px] opacity-50">Shift Termination</label>
+                        <input type="time" name="end_shift_time" class="input-field" required>
+                        <input type="file" name="end_shift_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="flex items-center gap-4 bg-black/30 p-4 rounded-2xl border border-white/5">
+            <p class="label-caps !mb-0 flex-grow">Visual Confirmation (ETA/Proof)</p>
+            <input type="file" name="eta_img" accept="image/*" class="text-[10px] text-gray-500 font-bold" required>
+        </div>
+        <button type="submit" class="btn-main w-full py-6 text-2xl shadow-2xl shadow-amber-400/20">Finalize & Transmit Data</button>
+    </form>
+</main>
+<script>
+    navigator.geolocation.getCurrentPosition(
+        p => { document.getElementById('lat').value = p.coords.latitude; document.getElementById('lng').value = p.coords.longitude; },
+        e => console.log("GPS unavailable")
+    );
+
+    function triggerBreak(action) {
+        const status = document.getElementById('breakStatus');
+        status.textContent = `Preparing ${action.toLowerCase()} break image...`;
+        document.getElementById('breakAction').value = action;
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(pos => {
+                document.getElementById('breakLat').value = pos.coords.latitude;
+                document.getElementById('breakLng').value = pos.coords.longitude;
+                status.textContent = `${action} break location captured.`;
+                document.getElementById('breakPhotoInput').click();
+            }, err => {
+                document.getElementById('breakLat').value = 'N/A';
+                document.getElementById('breakLng').value = 'N/A';
+                status.textContent = 'Location unavailable; using N/A. Please take photo.';
+                document.getElementById('breakPhotoInput').click();
+            }, {enableHighAccuracy: true, timeout: 10000});
+        } else {
+            document.getElementById('breakLat').value = 'N/A';
+            document.getElementById('breakLng').value = 'N/A';
+            document.getElementById('breakPhotoInput').click();
+        }
+    }
+
+    function submitBreakForm() {
+        if (!document.getElementById('breakPhotoInput').files.length) {
+            document.getElementById('breakStatus').textContent = 'No photo taken. Break aborted.';
+            return;
+        }
+        document.getElementById('breakStatus').textContent = 'Uploading break evidence...';
+        document.getElementById('breakForm').submit();
+    }
+
+    function triggerETA() {
+        const status = document.getElementById('breakStatus');
+        status.textContent = 'Preparing ETA photo...';
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(pos => {
+                document.getElementById('etaLat').value = pos.coords.latitude;
+                document.getElementById('etaLng').value = pos.coords.longitude;
+                status.textContent = 'ETA location captured.';
+                document.getElementById('etaPhotoInput').click();
+            }, err => {
+                document.getElementById('etaLat').value = 'N/A';
+                document.getElementById('etaLng').value = 'N/A';
+                document.getElementById('etaPhotoInput').click();
+            }, {enableHighAccuracy: true, timeout: 10000});
+        } else {
+            document.getElementById('etaLat').value = 'N/A';
+            document.getElementById('etaLng').value = 'N/A';
+            document.getElementById('etaPhotoInput').click();
+        }
+    }
+
+    function submitETAForm() {
+        if (!document.getElementById('etaPhotoInput').files.length) {
+            document.getElementById('breakStatus').textContent = 'No photo taken. ETA aborted.';
+            return;
+        }
+        document.getElementById('breakStatus').textContent = 'Uploading ETA photo...';
+        document.getElementById('etaForm').submit();
+    }
+</script>
+""" + CHAT_HTML + """
+</body></html>"""
 
 SUCCESS_HTML = f"<html>{COMMON_HEAD}<body class='flex items-center justify-center min-h-screen p-6'><div class='glass-panel p-16 rounded-[3rem] text-center max-w-md w-full border-b-8 border-amber-400'><div class='w-24 h-24 bg-amber-400 rounded-full flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-amber-400/40'><svg class='w-12 h-12 text-black' fill='none' stroke='currentColor' viewBox='0 0 24 24'><path stroke-linecap='round' stroke-linejoin='round' stroke-width='4' d='M5 13l4 4L19 7'></path></svg></div><h1 class='text-4xl font-black text-white mb-4 uppercase italic tracking-tighter'>Data Synced</h1><p class='text-gray-500 font-bold uppercase text-xs tracking-[3px] mb-10'>Transmission Securely Filed</p><a href='/op' class='btn-main px-12 py-5 inline-block text-sm shadow-xl'>Return to Interface</a></div></body></html>"
 
