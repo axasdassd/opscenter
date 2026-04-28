@@ -225,29 +225,23 @@ def handle_slack_message(user_id, text):
     
     text = text.strip().lower()
     
-    # Enhanced command patterns with natural language variations
-    if text in ["help", "commands", "menu", "info"]:
-        return get_help_menu()
-    elif text in ["status", "today", "progress", "summary", "check"]:
+    # Command patterns
+    if text in ["help", "status", "info"]:
         return get_user_status(user)
-    elif text in ["address", "location", "where", "route"]:
+    elif text == "address":
         return get_user_address(user)
     elif text.startswith("break"):
         return handle_break_command(user, text)
-    elif text in ["eta", "location photo", "photo location"]:
+    elif text == "eta":
         return handle_eta_request(user)
-    elif text in ["profile", "my info", "user info"]:
-        return get_user_profile(user)
-    elif text in ["pending", "todo", "what's left", "incomplete"]:
-        return get_pending_tasks(user)
-    elif text in ["done", "completed", "finished"]:
-        return get_completed_tasks(user)
-    elif text in ["ready", "what now", "next"]:
-        return get_next_actions(user)
-    elif text in ["support", "help admin", "contact", "issues"]:
-        return get_support_info()
     else:
-        return get_help_menu()
+        return """Available commands:
+• *help* - Show your current status
+• *address* - View your assigned address
+• *break start* - Start your break
+• *break end* - End your break  
+• *eta* - Get location for ETA photo
+• *status* - Show today's completion status"""
 
 
 def get_user_status(user):
@@ -310,170 +304,6 @@ def handle_break_command(user, text):
 def handle_eta_request(user):
     """Handle ETA request."""
     return "For ETA submission, please use the OpsCenter web interface and take a location photo as required."
-
-
-def get_help_menu():
-    """Get help menu with all available commands."""
-    return """🤖 *OpsCenter Bot Commands*
-
-📊 **Status & Info:**
-• `help` • `commands` • `menu` - Show this help
-• `status` • `today` • `progress` - Your daily progress
-• `profile` • `my info` - Your account info
-
-📍 **Operations:**
-• `address` • `location` • `where` - Your assigned address
-• `break start` • `break end` - Break management
-• `eta` • `location photo` - ETA submission
-
-📋 **Task Management:**
-• `pending` • `todo` - What's left to do
-• `done` • `completed` - What you've finished
-• `ready` • `what now` - Next actions
-
-🆘 **Support:**
-• `support` • `contact` - Get help from admin
-
-💡 *Tip: You can use any of the alternative commands shown above!*"""
-
-
-def get_user_profile(user):
-    """Get user profile information."""
-    return f"""👤 *{user.username}* Profile
-
-🔧 **Role:** {user.role.title()}
-📅 **Last Login:** {user.last_login}
-📊 **Status:** {user.status.title()}
-🆔 **User ID:** {user.id}
-
-💬 *Linked Slack Account: {'✅ Connected' if user.slack_user_id else '❌ Not linked'}*
-"""
-
-
-def get_pending_tasks(user):
-    """Get pending/incomplete tasks for user."""
-    completion = check_daily_completion(user.id)
-    pending = []
-    
-    if not completion['has_log']:
-        pending.append("📝 Submit daily log")
-    if not completion['has_break_start']:
-        pending.append("☕ Start your break")
-    if not completion['has_break_end'] and completion['has_break_start']:
-        pending.append("🏁 End your break")
-    if not completion['has_eta']:
-        pending.append("📍 Submit ETA location")
-    
-    if pending:
-        return f"""📋 *Pending Tasks* - {user.username}
-
-{chr(10).join(pending)}
-
-💡 *Use 'ready' or 'what now' for next actions!*"""
-    else:
-        return f"""🎉 *All Caught Up!* - {user.username}
-
-✅ You've completed all required tasks for today!
-
-🌟 *Great job!*"""
-
-
-def get_completed_tasks(user):
-    """Get completed tasks for user."""
-    completion = check_daily_completion(user.id)
-    completed = []
-    
-    if completion['has_log']:
-        completed.append("✅ Daily log submitted")
-    if completion['has_break_start']:
-        completed.append("✅ Break started")
-    if completion['has_break_end']:
-        completed.append("✅ Break ended")
-    if completion['has_eta']:
-        completed.append("✅ ETA location submitted")
-    
-    if completed:
-        return f"""✅ *Completed Today* - {user.username}
-
-{chr(10).join(completed)}
-
-📊 *Overall: {'Complete' if completion['is_complete'] else 'In Progress'}*"""
-    else:
-        return f"""📝 *No Tasks Yet* - {user.username}
-
-🚀 *Start with your daily log!*"""
-
-
-def get_next_actions(user):
-    """Get recommended next actions for user."""
-    completion = check_daily_completion(user.id)
-    
-    if not completion['has_log']:
-        return """🚀 *Next Action: Submit Daily Log*
-
-📝 This is your first task of the day!
-📍 Include mileage, photos, and GPS
-🔗 Use the OpsCenter web interface
-
-💡 *Type 'status' to see all requirements*"""
-    
-    elif not completion['has_break_start']:
-        return """☕ *Next Action: Start Your Break*
-
-⏰ Time for a break!
-📸 Take a photo when starting
-🔗 Use the OpsCenter web interface
-
-💡 *Type 'break start' for more info*"""
-    
-    elif completion['has_break_start'] and not completion['has_break_end']:
-        return """🏁 *Next Action: End Your Break*
-
-⏰ Break time is over!
-📸 Take a photo when ending
-🔗 Use the OpsCenter web interface
-
-💡 *Type 'break end' for more info*"""
-    
-    elif not completion['has_eta']:
-        return """📍 *Next Action: Submit ETA Location*
-
-🗺️ Location photo required!
-📸 Take a photo of your location
-🔗 Use the OpsCenter web interface
-
-💡 *Type 'eta' for more info*"""
-    
-    else:
-        return """🎉 *All Tasks Complete!*
-
-⭐ You're finished for today!
-🏆 Great job staying on track
-🌟 Ready for tomorrow's challenges
-
-💡 *Type 'status' to review your day*"""
-
-
-def get_support_info():
-    """Get support and contact information."""
-    return """🆘 *OpsCenter Support*
-
-👨‍💼 **Admin Support:**
-• Contact your system administrator
-• Report technical issues
-• Request account changes
-
-📧 **Common Issues:**
-• Login problems → See admin
-• Slack not linking → Check Slack ID
-• Missing features → Contact admin
-
-🔧 **Self-Help:**
-• `help` - View all commands
-• `status` - Check your progress
-• Use web interface for full features
-
-💬 *For immediate assistance, contact your admin directly!*"""
 
 
 def send_telegram_alert(action, filename, lat=None, lng=None, timestamp=None):
