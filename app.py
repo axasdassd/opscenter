@@ -215,6 +215,28 @@ def notify_slack_with_files(message, filenames):
         send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, caption, filename)
 
 
+def get_slack_dm_channel(slack_user_id):
+    """Open or get DM channel ID for a user."""
+    if not SLACK_BOT_TOKEN or not slack_user_id:
+        return None
+    try:
+        import requests
+        res = requests.post(
+            "https://slack.com/api/conversations.open",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+            json={"users": slack_user_id},
+            timeout=10
+        )
+        data = res.json()
+        if data.get("ok") and data.get("channel"):
+            return data["channel"]["id"]
+        print(f"Failed to open DM channel: {data.get('error')}")
+        return None
+    except Exception as ex:
+        print(f"Error opening DM channel: {ex}")
+        return None
+
+
 def send_slack_dm_with_file(slack_user_id, text, filename):
     """Send a Slack DM with a file attachment."""
     if not SLACK_BOT_TOKEN or not slack_user_id:
@@ -225,11 +247,16 @@ def send_slack_dm_with_file(slack_user_id, text, filename):
         if not os.path.exists(photo_path):
             print(f"Photo not found: {photo_path}")
             return send_slack_dm(slack_user_id, text)
+        # First, open DM channel to get channel ID
+        channel_id = get_slack_dm_channel(slack_user_id)
+        if not channel_id:
+            print("Could not open DM channel, falling back to text-only")
+            return send_slack_dm(slack_user_id, text)
         with open(photo_path, 'rb') as img:
             res = requests.post(
                 "https://slack.com/api/files.upload",
                 headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-                data={"channels": slack_user_id, "initial_comment": text},
+                data={"channels": channel_id, "initial_comment": text},
                 files={"file": img},
                 timeout=30
             )
