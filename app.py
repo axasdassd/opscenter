@@ -45,7 +45,7 @@ class User(db.Model):
     role = db.Column(db.String(20), default="op")
     last_login = db.Column(db.String(50), default="Never")
     status = db.Column(db.String(20), default="Active")
-    slack_user_id = db.Column(db.String(50), nullable=True)  # NEW: Slack User ID
+    slack_user_id = db.Column(db.String(50), nullable=True)
     logs = db.relationship("Log", backref="operator", lazy=True, foreign_keys="Log.user_id")
 
 class Log(db.Model):
@@ -456,12 +456,9 @@ def parse_mentions(body):
 def init_db():
     with app.app_context():
         db.create_all()
-        # Add slack_user_id column if it doesn't exist yet (safe migration)
         try:
             with db.engine.connect() as conn:
-                # Check if column exists first
                 if 'postgresql' in str(db.engine.url).lower():
-                    # PostgreSQL
                     result = conn.execute(db.text("""
                         SELECT column_name FROM information_schema.columns 
                         WHERE table_name = 'user' AND column_name = 'slack_user_id'
@@ -469,7 +466,6 @@ def init_db():
                     if not result.fetchone():
                         conn.execute(db.text("ALTER TABLE \"user\" ADD COLUMN slack_user_id VARCHAR(50)"))
                 else:
-                    # SQLite
                     result = conn.execute(db.text("PRAGMA table_info(user)"))
                     columns = [row[1] for row in result.fetchall()]
                     if 'slack_user_id' not in columns:
@@ -477,7 +473,7 @@ def init_db():
                 conn.commit()
         except Exception as e:
             print(f"Migration info: {e}")
-            pass  # Column already exists or migration failed
+            pass
         if not User.query.first():
             admin = User(
                 username="admin",
@@ -787,7 +783,6 @@ def set_address():
     log_event(f"Address set for {op.username}: {addr_text}")
     db.session.commit()
 
-    # ── Send Slack DM to operator if they have a Slack ID set ──
     if op.slack_user_id:
         blocks = [
             {
@@ -809,7 +804,7 @@ def set_address():
                 }
             }
         ]
-        
+
         if booking_time:
             blocks.append({
                 "type": "section",
@@ -818,7 +813,7 @@ def set_address():
                     "text": f"*Booking Time:* {booking_time}\n\nPlease be on time for your scheduled appointment."
                 }
             })
-        
+
         blocks.append({
             "type": "context",
             "elements": [
@@ -828,7 +823,7 @@ def set_address():
                 }
             ]
         })
-        
+
         send_slack_dm(
             op.slack_user_id,
             "",
@@ -959,6 +954,163 @@ def uploaded_file(filename):
 def logout():
     session.clear()
     return redirect(url_for("index"))
+
+# ─── SLACK BOT EVENTS ────────────────────────────────────────
+
+@app.route("/slack/events", methods=["POST"])
+def slack_events():
+    data = request.json
+
+    # ── Slack URL verification challenge (one-time when you save the URL) ──
+    if data.get("type") == "url_verification":
+        return jsonify({"challenge": data["challenge"]})
+
+    # ── Only handle event callbacks ──
+    if data.get("type") != "event_callback":
+        return jsonify({"ok": True})
+
+    event = data.get("event", {})
+
+    # ── Only handle direct messages, ignore bot's own messages ──
+    if event.get("type") != "message":
+        return jsonify({"ok": True})
+    if event.get("bot_id") or event.get("subtype"):
+        return jsonify({"ok": True})
+
+    slack_uid = event.get("user")
+    text = event.get("text", "").strip().lower()
+
+    if not slack_uid or not text:
+        return jsonify({"ok": True})
+
+    # ── Match Slack user to an OpsCenter operator ──
+    op = User.query.filter_by(slack_user_id=slack_uid).first()
+
+    if not op:
+        send_slack_dm(
+            slack_uid,
+            "⚠️ Your Slack account isn't linked to any OpsCenter operator. Ask your admin to set your Slack User ID."
+        )
+        return jsonify({"ok": True})
+
+    # ── Route commands ──
+    if "address" in text:
+        _slack_cmd_address(op)
+    elif "status" in text:
+        _slack_cmd_status(op)
+    elif "help" in text:
+        _slack_cmd_help(op)
+    else:
+        send_slack_dm(
+            op.slack_user_id,
+            f"Unknown command. Type *help* to see what I can do."
+        )
+
+    return jsonify({"ok": True})
+
+
+def _slack_cmd_address(op):
+    address = Address.query.filter_by(assigned_op_id=op.id).first()
+    if not address:
+        send_slack_dm(
+            op.slack_user_id,
+            "📭 No address assigned to you yet. Check back later or contact your admin."
+        )
+        return
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "📍 Your Assignment", "emoji": True}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": f"*Address:*\n{address.address_text}"}
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": f"Assigned at {address.timestamp}"}]
+        }
+    ]
+    send_slack_dm(op.slack_user_id, "", blocks=blocks)
+
+
+def _slack_cmd_status(op):
+    today = datetime.now().strftime("%Y-%m-%d")
+    completion = check_daily_completion(op.id, today)
+
+    def check(val):
+        return "✅" if val else "❌"
+
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": f"📊 Today's Status — {today}", "emoji": True}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": f"{check(completion['has_log'])} *Daily Log*"},
+                {"type": "mrkdwn", "text": f"{check(completion['has_break_start'])} *Break Start*"},
+                {"type": "mrkdwn", "text": f"{check(completion['has_break_end'])} *Break End*"},
+                {"type": "mrkdwn", "text": f"{check(completion['has_eta'])} *ETA Proof*"},
+            ]
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": "*Transmission:* " + (
+                    "✅ Complete — all data sent." if completion['is_complete']
+                    else "⏳ Incomplete — still pending submissions."
+                )
+            }
+        }
+    ]
+
+    # If log exists, append mileage summary
+    if completion['log']:
+        log = completion['log']
+        try:
+            dist = log.end_mileage - log.start_mileage
+        except:
+            dist = "N/A"
+        blocks.append({
+            "type": "context",
+            "elements": [{
+                "type": "mrkdwn",
+                "text": f"Odometer: {log.start_mileage} → {log.end_mileage} | Distance: {dist} mi | Shift: {log.start_shift_time}–{log.end_shift_time}"
+            }]
+        })
+
+    send_slack_dm(op.slack_user_id, "", blocks=blocks)
+
+
+def _slack_cmd_help(op):
+    blocks = [
+        {
+            "type": "header",
+            "text": {"type": "plain_text", "text": "🤖 OpsCenter Bot — Commands", "emoji": True}
+        },
+        {"type": "divider"},
+        {
+            "type": "section",
+            "fields": [
+                {"type": "mrkdwn", "text": "*`address`*\nGet your assigned address for today."},
+                {"type": "mrkdwn", "text": "*`status`*\nCheck today's submission progress."},
+                {"type": "mrkdwn", "text": "*`help`*\nShow this message."},
+            ]
+        },
+        {
+            "type": "context",
+            "elements": [{"type": "mrkdwn", "text": "More commands coming soon."}]
+        }
+    ]
+    send_slack_dm(op.slack_user_id, "", blocks=blocks)
+
 
 # ─── MESSAGING API ───────────────────────────────────────────
 
