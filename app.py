@@ -228,9 +228,12 @@ def get_slack_dm_channel(slack_user_id):
             timeout=10
         )
         data = res.json()
+        print(f"DEBUG: conversations.open response: {data}")
         if data.get("ok") and data.get("channel"):
-            return data["channel"]["id"]
-        print(f"Failed to open DM channel: {data.get('error')}")
+            channel_id = data["channel"]["id"]
+            print(f"DEBUG: Got DM channel ID: {channel_id}")
+            return channel_id
+        print(f"DEBUG: Failed to open DM channel: {data.get('error')}")
         return None
     except Exception as ex:
         print(f"Error opening DM channel: {ex}")
@@ -261,6 +264,7 @@ def send_slack_dm_with_file(slack_user_id, text, filename):
                 timeout=30
             )
         data = res.json()
+        print(f"Slack files.upload response: {data}")
         if not data.get("ok"):
             print(f"Slack file upload error: {data.get('error')}")
             return send_slack_dm(slack_user_id, text)
