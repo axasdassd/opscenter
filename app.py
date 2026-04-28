@@ -207,6 +207,25 @@ def notify_slack(message, filename=None):
         send_slack_dm(SLACK_NOTIFY_USER_ID, message)
 
 
+def send_break_reminder(user_id, username):
+    """Send break ending reminder to operator after 1 minute."""
+    from threading import Timer
+    def reminder():
+        # Get user's Slack ID from database
+        user = User.query.get(user_id)
+        if user and user.slack_user_id:
+            message = f"""⏰ Break Reminder
+Hey {username}! Your 2-minute break is almost over.
+You have 1 minute left. Please make sure to sign your end break at the opscenter site before returning to work."""
+            send_slack_dm(user.slack_user_id, message)
+            print(f"Break reminder sent to {username} ({user.slack_user_id})")
+        else:
+            print(f"No Slack ID for user {username}, cannot send break reminder")
+    # Schedule reminder after 60 seconds (1 minute into the 2-minute break)
+    Timer(60.0, reminder).start()
+    print(f"Break reminder scheduled for {username} in 60 seconds")
+
+
 def notify_slack_with_files(message, filenames):
     """Send notification with multiple photos - ENHANCED."""
     if not SLACK_NOTIFY_USER_ID:
@@ -901,6 +920,8 @@ def break_action():
 Operator: {session['username']}
 Time: {timestamp.split(' ')[1]}
 Location: {lat}, {lng}""", filename)
+            # Schedule break reminder after 1 minute
+            send_break_reminder(session['user_id'], session['username'])
         else:
             notify_slack(f"""🏁 Break Ended
 Operator: {session['username']}
