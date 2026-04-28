@@ -194,25 +194,41 @@ def send_slack_dm(slack_user_id, text, blocks=None):
 def notify_slack(message, filename=None):
     """Send notification to configured Slack user, optionally with a photo."""
     if not SLACK_NOTIFY_USER_ID:
+        print("No SLACK_NOTIFY_USER_ID set")
         return
-    if filename and filename != "placeholder.jpg":
+
+    if filename and filename != "placeholder.jpg" and os.path.exists(os.path.join(UPLOAD_FOLDER, filename)):
+        print(f"Single file notification: {filename}")
         send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, message, filename)
     else:
+        if filename:
+            print(f"File not found or placeholder, sending text-only: {filename}")
+        print("Text-only notification")
         send_slack_dm(SLACK_NOTIFY_USER_ID, message)
 
 
 def notify_slack_with_files(message, filenames):
-    """Send notification to configured Slack user with multiple photos."""
+    """Send notification with multiple photos - ENHANCED."""
     if not SLACK_NOTIFY_USER_ID:
+        print("No SLACK_NOTIFY_USER_ID set")
         return
-    valid_files = [f for f in filenames if f and f != "placeholder.jpg"]
+
+    valid_files = [f for f in filenames if f and f != "placeholder.jpg" and os.path.exists(os.path.join(UPLOAD_FOLDER, f))]
+    print(f"Found {len(valid_files)} valid files: {valid_files}")
+
     if not valid_files:
+        print("Sending text-only notification")
         send_slack_dm(SLACK_NOTIFY_USER_ID, message)
         return
+
+    # Send first photo with full message, others as supplements
     for i, filename in enumerate(valid_files):
-        # First file gets the full message as caption, rest just get sent
-        caption = message if i == 0 else f"📎 Photo {i+1}/{len(valid_files)}"
-        send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, caption, filename)
+        caption = message if i == 0 else f"📎 Additional Photo {i+1}/{len(valid_files)}"
+        success = send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, caption, filename)
+        if not success:
+            print(f"Failed to send photo {i+1}: {filename}")
+        else:
+            print(f"Sent photo {i+1}: {filename}")
 
 
 def get_slack_dm_channel(slack_user_id):
@@ -240,38 +256,60 @@ def get_slack_dm_channel(slack_user_id):
         return None
 
 
-def send_slack_dm_with_file(slack_user_id, text, filename):
-    """Send a Slack DM with a file attachment."""
+def send_slack_dm_with_file(slack_user_id, caption, filename):
+    """Send Slack DM with file attachment - FIXED VERSION."""
     if not SLACK_BOT_TOKEN or not slack_user_id:
-        return False
+        print("Missing credentials for file DM")
+        return send_slack_dm(slack_user_id, caption)
+
+    photo_path = os.path.join(UPLOAD_FOLDER, filename)
+    if not os.path.exists(photo_path):
+        print(f"Photo not found: {photo_path}")
+        return send_slack_dm(slack_user_id, f"{caption}\n\n[Photo missing: {filename}]")
+
     try:
         import requests
-        photo_path = os.path.join(UPLOAD_FOLDER, filename)
-        if not os.path.exists(photo_path):
-            print(f"Photo not found: {photo_path}")
-            return send_slack_dm(slack_user_id, text)
-        # First, open DM channel to get channel ID
+
+        # Step 1: Get DM channel
+        print(f"Uploading {filename} to Slack DM {slack_user_id}")
         channel_id = get_slack_dm_channel(slack_user_id)
         if not channel_id:
-            print("Could not open DM channel, falling back to text-only")
-            return send_slack_dm(slack_user_id, text)
+            print("Could not open DM channel, sending text only")
+            return send_slack_dm(slack_user_id, caption)
+
+        # Step 2: Upload file with proper multipart format
         with open(photo_path, 'rb') as img:
+            files = {'file': (filename, img, 'image/jpeg')}
+            data = {
+                'channels': channel_id,
+                'initial_comment': caption
+            }
             res = requests.post(
                 "https://slack.com/api/files.upload",
                 headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-                data={"channels": channel_id, "initial_comment": text},
-                files={"file": img},
-                timeout=30
+                data=data,
+                files=files,
+                timeout=45
             )
-        data = res.json()
-        print(f"Slack files.upload response: {data}")
-        if not data.get("ok"):
-            print(f"Slack file upload error: {data.get('error')}")
-            return send_slack_dm(slack_user_id, text)
-        return data.get("ok", False)
+
+        result = res.json()
+        print(f"File upload response: {result}")
+
+        if result.get("ok"):
+            print(f"File uploaded successfully to {channel_id}")
+            return True
+        else:
+            error_msg = result.get('error', 'Unknown error')
+            print(f"File upload failed: {error_msg}")
+            if 'no_permission' in error_msg:
+                print("Fix: Add 'files:write' scope to Slack App")
+            elif 'channel_not_found' in error_msg:
+                print("Fix: Check SLACK_NOTIFY_USER_ID is correct")
+            return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed: {error_msg}")
+
     except Exception as ex:
-        print(f"Slack file upload failed: {ex}")
-        return send_slack_dm(slack_user_id, text)
+        print(f"File upload exception: {ex}")
+        return send_slack_dm(slack_user_id, f"{caption}\n\nUpload error occurred")
 
 
 def send_telegram_alert(action, filename, lat=None, lng=None, timestamp=None):
@@ -2443,6 +2481,22 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
 </body></html>"""
 
 SUCCESS_HTML = f"<html>{COMMON_HEAD}<body class='flex items-center justify-center min-h-screen p-6'><div class='glass-panel p-16 rounded-[3rem] text-center max-w-md w-full border-b-8 border-amber-400'><div class='w-24 h-24 bg-amber-400 rounded-full flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-amber-400/40'><svg class='w-12 h-12 text-black' fill='none' stroke='currentColor' viewBox='0 0 24 24'><path stroke-linecap='round' stroke-linejoin='round' stroke-width='4' d='M5 13l4 4L19 7'></path></svg></div><h1 class='text-4xl font-black text-white mb-4 uppercase italic tracking-tighter'>Data Synced</h1><p class='text-gray-500 font-bold uppercase text-xs tracking-[3px] mb-10'>Transmission Securely Filed</p><a href='/op' class='btn-main px-12 py-5 inline-block text-sm shadow-xl'>Return to Interface</a></div></body></html>"
+
+@app.route("/test_slack", methods=["GET"])
+@admin_required
+def test_slack():
+    """Test Slack DM with photo."""
+    import glob
+    # Find a real uploaded file
+    files = glob.glob(os.path.join(UPLOAD_FOLDER, "*.jpg")) + glob.glob(os.path.join(UPLOAD_FOLDER, "*.png"))
+    if files:
+        filename = os.path.basename(files[0])
+        notify_slack(f"🧪 TEST: Photo upload test from opscenter", filename)
+        return f"Sent test photo: {filename}. Check Slack DMs!", 200
+    else:
+        notify_slack("🧪 TEST: Text-only test (no photos found)")
+        return "Sent text-only test. Upload a photo first for full test.", 200
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
