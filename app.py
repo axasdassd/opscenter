@@ -191,10 +191,56 @@ def send_slack_dm(slack_user_id, text, blocks=None):
         return False
 
 
-def notify_slack(message):
-    """Send notification to configured Slack user."""
-    if SLACK_NOTIFY_USER_ID:
+def notify_slack(message, filename=None):
+    """Send notification to configured Slack user, optionally with a photo."""
+    if not SLACK_NOTIFY_USER_ID:
+        return
+    if filename and filename != "placeholder.jpg":
+        send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, message, filename)
+    else:
         send_slack_dm(SLACK_NOTIFY_USER_ID, message)
+
+
+def notify_slack_with_files(message, filenames):
+    """Send notification to configured Slack user with multiple photos."""
+    if not SLACK_NOTIFY_USER_ID:
+        return
+    valid_files = [f for f in filenames if f and f != "placeholder.jpg"]
+    if not valid_files:
+        send_slack_dm(SLACK_NOTIFY_USER_ID, message)
+        return
+    for i, filename in enumerate(valid_files):
+        # First file gets the full message as caption, rest just get sent
+        caption = message if i == 0 else f"📎 Photo {i+1}/{len(valid_files)}"
+        send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, caption, filename)
+
+
+def send_slack_dm_with_file(slack_user_id, text, filename):
+    """Send a Slack DM with a file attachment."""
+    if not SLACK_BOT_TOKEN or not slack_user_id:
+        return False
+    try:
+        import requests
+        photo_path = os.path.join(UPLOAD_FOLDER, filename)
+        if not os.path.exists(photo_path):
+            print(f"Photo not found: {photo_path}")
+            return send_slack_dm(slack_user_id, text)
+        with open(photo_path, 'rb') as img:
+            res = requests.post(
+                "https://slack.com/api/files.upload",
+                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+                data={"channels": slack_user_id, "initial_comment": text},
+                files={"file": img},
+                timeout=30
+            )
+        data = res.json()
+        if not data.get("ok"):
+            print(f"Slack file upload error: {data.get('error')}")
+            return send_slack_dm(slack_user_id, text)
+        return data.get("ok", False)
+    except Exception as ex:
+        print(f"Slack file upload failed: {ex}")
+        return send_slack_dm(slack_user_id, text)
 
 
 def send_telegram_alert(action, filename, lat=None, lng=None, timestamp=None):
@@ -709,14 +755,16 @@ def submit():
     )
     db.session.add(log)
     db.session.commit()
-    # Send Slack notification
+    # Send Slack notification with all photos
     try:
         distance = e_m - s_m
-        notify_slack(f"""📊 Daily Telemetry Complete
+        message = f"""📊 Daily Telemetry Complete
 Operator: {session['username']}
 Mileage: {s_m} → {e_m} ({distance} mi)
 Shift: {f.get('start_shift_time')} - {f.get('end_shift_time')}
-All photos uploaded""")
+All photos uploaded"""
+        photos = [log.start_photo, log.end_mileage_photo, log.start_shift_photo, log.end_shift_photo, log.eta_img]
+        notify_slack_with_files(message, photos)
     except Exception as e:
         print(f"Slack notification error: {e}")
     trigger_transmission_check(session["user_id"])
@@ -756,12 +804,12 @@ def break_action():
             notify_slack(f"""☕ Break Started
 Operator: {session['username']}
 Time: {timestamp.split(' ')[1]}
-Location: {lat}, {lng}""")
+Location: {lat}, {lng}""", filename)
         else:
             notify_slack(f"""🏁 Break Ended
 Operator: {session['username']}
 Time: {timestamp.split(' ')[1]}
-Location: {lat}, {lng}""")
+Location: {lat}, {lng}""", filename)
     except Exception as e:
         print(f"Slack notification error: {e}")
     if action == "End":
@@ -797,7 +845,7 @@ def submit_eta():
         notify_slack(f"""📍 ETA Location Submitted
 Operator: {session['username']}
 Time: {timestamp.split(' ')[1]}
-Location: {lat}, {lng}""")
+Location: {lat}, {lng}""", filename)
     except Exception as e:
         print(f"Slack notification error: {e}")
     trigger_transmission_check(session['user_id'])
