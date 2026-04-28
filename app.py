@@ -257,7 +257,7 @@ def get_slack_dm_channel(slack_user_id):
 
 
 def send_slack_dm_with_file(slack_user_id, caption, filename):
-    """Send Slack DM with file attachment - FIXED VERSION."""
+    """Send Slack DM with file attachment - Using new upload API."""
     if not SLACK_BOT_TOKEN or not slack_user_id:
         print("Missing credentials for file DM")
         return send_slack_dm(slack_user_id, caption)
@@ -277,34 +277,61 @@ def send_slack_dm_with_file(slack_user_id, caption, filename):
             print("Could not open DM channel, sending text only")
             return send_slack_dm(slack_user_id, caption)
 
-        # Step 2: Upload file with proper multipart format
+        # Step 2: Get upload URL using new API
+        file_size = os.path.getsize(photo_path)
+        upload_url_res = requests.post(
+            "https://slack.com/api/files.getUploadURLExternal",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
+            data={"filename": filename, "length": file_size},
+            timeout=15
+        )
+        upload_data = upload_url_res.json()
+        print(f"getUploadURLExternal response: {upload_data}")
+
+        if not upload_data.get("ok"):
+            print(f"Failed to get upload URL: {upload_data.get('error')}")
+            return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed: {upload_data.get('error')}")
+
+        upload_url = upload_data.get("upload_url")
+        file_id = upload_data.get("file_id")
+
+        if not upload_url or not file_id:
+            print("Missing upload_url or file_id in response")
+            return send_slack_dm(slack_user_id, caption)
+
+        # Step 3: Upload file to the provided URL
         with open(photo_path, 'rb') as img:
-            files = {'file': (filename, img, 'image/jpeg')}
-            data = {
-                'channels': channel_id,
-                'initial_comment': caption
-            }
-            res = requests.post(
-                "https://slack.com/api/files.upload",
-                headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}"},
-                data=data,
-                files=files,
-                timeout=45
+            upload_res = requests.post(
+                upload_url,
+                data=img.read(),
+                timeout=30
             )
+        print(f"File upload to external URL status: {upload_res.status_code}")
 
-        result = res.json()
-        print(f"File upload response: {result}")
+        if upload_res.status_code != 200:
+            print(f"Failed to upload file to external URL")
+            return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed")
 
-        if result.get("ok"):
+        # Step 4: Complete the upload to send to channel
+        complete_res = requests.post(
+            "https://slack.com/api/files.completeUploadExternal",
+            headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
+            json={
+                "files": [{"id": file_id, "title": filename}],
+                "channel_id": channel_id,
+                "initial_comment": caption
+            },
+            timeout=15
+        )
+        complete_data = complete_res.json()
+        print(f"completeUploadExternal response: {complete_data}")
+
+        if complete_data.get("ok"):
             print(f"File uploaded successfully to {channel_id}")
             return True
         else:
-            error_msg = result.get('error', 'Unknown error')
-            print(f"File upload failed: {error_msg}")
-            if 'no_permission' in error_msg:
-                print("Fix: Add 'files:write' scope to Slack App")
-            elif 'channel_not_found' in error_msg:
-                print("Fix: Check SLACK_NOTIFY_USER_ID is correct")
+            error_msg = complete_data.get('error', 'Unknown error')
+            print(f"Complete upload failed: {error_msg}")
             return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed: {error_msg}")
 
     except Exception as ex:
