@@ -208,22 +208,42 @@ def notify_slack(message, filename=None):
 
 
 def send_break_reminder(user_id, username, slack_user_id):
-    """Send break ending reminder to operator after 1 minute."""
+    """Send break reminders at 1 and 2 minutes."""
     from threading import Timer
-    def reminder():
-        # Use app context for database access in background thread
+
+    def first_reminder():
         with app.app_context():
             if slack_user_id:
                 message = f"""⏰ Break Reminder
 Hey {username}! Your 2-minute break is almost over.
 You have 1 minute left. Please make sure to sign your end break at the opscenter site before returning to work."""
                 send_slack_dm(slack_user_id, message)
-                print(f"Break reminder sent to {username} ({slack_user_id})")
+                print(f"First break reminder sent to {username}")
             else:
-                print(f"No Slack ID for user {username}, cannot send break reminder")
-    # Schedule reminder after 60 seconds (1 minute into the 2-minute break)
-    Timer(60.0, reminder).start()
-    print(f"Break reminder scheduled for {username} in 60 seconds")
+                print(f"No Slack ID for {username}, cannot send reminder")
+
+    def second_reminder():
+        with app.app_context():
+            # Check if break was ended
+            latest_start = Break.query.filter_by(user_id=user_id, action="Start").order_by(Break.id.desc()).first()
+            latest_end = Break.query.filter_by(user_id=user_id, action="End").order_by(Break.id.desc()).first()
+
+            break_not_ended = not latest_end or (latest_start and latest_start.id > latest_end.id)
+
+            if break_not_ended and slack_user_id:
+                message = f"""⚠️ BREAK OVER
+Hey {username}! Your 2-minute break has ended.
+You are now over your break time. Please END YOUR BREAK immediately on the opscenter site.
+Thank you!"""
+                send_slack_dm(slack_user_id, message)
+                print(f"Second (overtime) reminder sent to {username}")
+            elif not break_not_ended:
+                print(f"Break already ended for {username}, no second reminder sent")
+
+    # Schedule reminders at 60s (1 min) and 120s (2 min)
+    Timer(60.0, first_reminder).start()
+    Timer(120.0, second_reminder).start()
+    print(f"Break reminders scheduled for {username} at 1 and 2 minutes")
 
 
 def notify_slack_with_files(message, filenames):
