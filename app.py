@@ -216,7 +216,7 @@ def send_break_reminder(user_id, username, slack_user_id):
             if slack_user_id:
                 message = f"""⏰ Break Reminder
 Hey {username}! Your 2-minute break is almost over.
-You have 1 minute left. Please make sure to sign your end break at the opscenter site before returning to work."""
+You have 1 minute left. Please make sure to sign your end break at the opscenter platform before returning to work."""
                 send_slack_dm(slack_user_id, message)
                 print(f"First break reminder sent to {username}")
             else:
@@ -233,7 +233,7 @@ You have 1 minute left. Please make sure to sign your end break at the opscenter
             if break_not_ended and slack_user_id:
                 message = f"""⚠️ BREAK OVER
 Hey {username}! Your 2-minute break has ended.
-You are now over your break time. Please END YOUR BREAK immediately on the opscenter site.
+You are now over your break time. Please END YOUR BREAK immediately on the opscenter platform.
 Thank you!"""
                 send_slack_dm(slack_user_id, message)
                 print(f"Second (overtime) reminder sent to {username}")
