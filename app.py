@@ -249,12 +249,15 @@ def send_break_reminder(user_id, username, slack_user_id):
 def notify_slack_with_files(message, filenames):
     if not SLACK_NOTIFY_USER_ID:
         return
+    print(f"DEBUG: notify_slack_with_files called with {len(filenames)} files: {filenames}")
     valid_files = [f for f in filenames if f and f != "placeholder.jpg" and os.path.exists(os.path.join(UPLOAD_FOLDER, f))]
+    print(f"DEBUG: Valid files after filtering: {len(valid_files)} files: {valid_files}")
     if not valid_files:
         send_slack_dm(SLACK_NOTIFY_USER_ID, message)
         return
     for i, filename in enumerate(valid_files):
         caption = message if i == 0 else f"📎 Additional Photo {i+1}/{len(valid_files)}"
+        print(f"DEBUG: Sending photo {i+1}/{len(valid_files)}: {filename}")
         send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, caption, filename)
 
 
