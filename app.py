@@ -5,8 +5,10 @@ from flask_limiter.util import get_remote_address
 from werkzeug.security import generate_password_hash, check_password_hash
 import os, csv, secrets, uuid, json, re
 from datetime import datetime, timedelta
+from apscheduler.schedulers.background import BackgroundScheduler
 from io import StringIO
 from functools import wraps
+
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(24))
@@ -26,13 +28,12 @@ UPLOAD_FOLDER = "uploads"
 ALLOWED_EXTENSIONS = {"jpg", "jpeg", "png", "gif", "webp", "heic"}
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8601658580:AAEF_qP8L-Nx2EEiymjg06Dt9dYQFsFX4Kc")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "6797616764")
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "")
-SLACK_NOTIFY_USER_ID = os.environ.get("SLACK_NOTIFY_USER_ID", "")  # Single Slack user to receive all notifications
+SLACK_BOT_TOKEN      = os.environ.get("SLACK_BOT_TOKEN", "")
+SLACK_NOTIFY_USER_ID = os.environ.get("SLACK_NOTIFY_USER_ID", "")
 
-# VAPID keys for Web Push
 VAPID_PRIVATE_KEY = os.environ.get("VAPID_PRIVATE_KEY", "")
 VAPID_PUBLIC_KEY  = os.environ.get("VAPID_PUBLIC_KEY", "")
 VAPID_CLAIMS      = {"sub": os.environ.get("VAPID_MAILTO", "mailto:admin@opscenter.app")}
@@ -40,94 +41,112 @@ VAPID_CLAIMS      = {"sub": os.environ.get("VAPID_MAILTO", "mailto:admin@opscent
 # ---------------- MODELS ----------------
 
 class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    password = db.Column(db.String(255), nullable=False)
-    role = db.Column(db.String(20), default="op")
-    last_login = db.Column(db.String(50), default="Never")
-    status = db.Column(db.String(20), default="Active")
-    slack_user_id = db.Column(db.String(50), nullable=True)  # NEW: Slack User ID
-    logs = db.relationship("Log", backref="operator", lazy=True, foreign_keys="Log.user_id")
+    id            = db.Column(db.Integer, primary_key=True)
+    username      = db.Column(db.String(80), unique=True, nullable=False)
+    password      = db.Column(db.String(255), nullable=False)
+    role          = db.Column(db.String(20), default="op")
+    last_login    = db.Column(db.String(50), default="Never")
+    status        = db.Column(db.String(20), default="Active")
+    slack_user_id = db.Column(db.String(50), nullable=True)
+    logs          = db.relationship("Log", backref="operator", lazy=True, foreign_keys="Log.user_id")
 
 class Log(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    id                = db.Column(db.Integer, primary_key=True)
+    user_id           = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
     username_snapshot = db.Column(db.String(80))
-    start_mileage = db.Column(db.Integer)
-    end_mileage = db.Column(db.Integer)
-    start_shift_time = db.Column(db.String(10))
-    end_shift_time = db.Column(db.String(10))
-    notes = db.Column(db.Text)
-    submitted_at = db.Column(db.String(30), default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-    lat = db.Column(db.String(30))
-    lng = db.Column(db.String(30))
-    start_photo = db.Column(db.String(200), default="placeholder.jpg")
+    start_mileage     = db.Column(db.Integer)
+    end_mileage       = db.Column(db.Integer)
+    start_shift_time  = db.Column(db.String(10))
+    end_shift_time    = db.Column(db.String(10))
+    notes             = db.Column(db.Text)
+    submitted_at      = db.Column(db.String(30), default=lambda: datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+    lat               = db.Column(db.String(30))
+    lng               = db.Column(db.String(30))
+    start_photo       = db.Column(db.String(200), default="placeholder.jpg")
     end_mileage_photo = db.Column(db.String(200), default="placeholder.jpg")
     start_shift_photo = db.Column(db.String(200), default="placeholder.jpg")
-    end_shift_photo = db.Column(db.String(200), default="placeholder.jpg")
-    eta_img = db.Column(db.String(200), default="placeholder.jpg")
+    end_shift_photo   = db.Column(db.String(200), default="placeholder.jpg")
+    eta_img           = db.Column(db.String(200), default="placeholder.jpg")
 
 class Event(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    time = db.Column(db.String(30))
+    id    = db.Column(db.Integer, primary_key=True)
+    time  = db.Column(db.String(30))
     event = db.Column(db.String(200))
     actor = db.Column(db.String(80), default="System")
 
 class Break(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    action = db.Column(db.String(20), nullable=False)
+    id        = db.Column(db.Integer, primary_key=True)
+    user_id   = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    action    = db.Column(db.String(20), nullable=False)
     timestamp = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    lat = db.Column(db.String(30))
-    lng = db.Column(db.String(30))
-    photo = db.Column(db.String(200), default='placeholder.jpg')
+    lat       = db.Column(db.String(30))
+    lng       = db.Column(db.String(30))
+    photo     = db.Column(db.String(200), default='placeholder.jpg')
 
 class Eta(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    id        = db.Column(db.Integer, primary_key=True)
+    user_id   = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     timestamp = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    lat = db.Column(db.String(30))
-    lng = db.Column(db.String(30))
-    photo = db.Column(db.String(200), default='placeholder.jpg')
+    lat       = db.Column(db.String(30))
+    lng       = db.Column(db.String(30))
+    photo     = db.Column(db.String(200), default='placeholder.jpg')
 
 class Address(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    address_text = db.Column(db.String(500), nullable=False)
-    assigned_op_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    id                  = db.Column(db.Integer, primary_key=True)
+    address_text        = db.Column(db.String(500), nullable=False)
+    assigned_op_id      = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     created_by_admin_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    timestamp = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-
-# ── MESSAGING MODELS ──
+    timestamp           = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
 
 class Channel(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(80))
-    is_dm = db.Column(db.Boolean, default=False)
+    id         = db.Column(db.Integer, primary_key=True)
+    name       = db.Column(db.String(80))
+    is_dm      = db.Column(db.Boolean, default=False)
     created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
     created_at = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    messages = db.relationship('Message', backref='channel', lazy=True, cascade='all, delete-orphan')
-    members = db.relationship('ChannelMember', backref='channel', lazy=True, cascade='all, delete-orphan')
+    messages   = db.relationship('Message', backref='channel', lazy=True, cascade='all, delete-orphan')
+    members    = db.relationship('ChannelMember', backref='channel', lazy=True, cascade='all, delete-orphan')
 
 class ChannelMember(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    channel_id = db.Column(db.Integer, db.ForeignKey('channel.id'), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    last_read_at = db.Column(db.String(30), default='1970-01-01 00:00:00')
+    id          = db.Column(db.Integer, primary_key=True)
+    channel_id  = db.Column(db.Integer, db.ForeignKey('channel.id'), nullable=False)
+    user_id     = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    last_read_at= db.Column(db.String(30), default='1970-01-01 00:00:00')
 
 class Message(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    channel_id = db.Column(db.Integer, db.ForeignKey('channel.id'), nullable=False)
-    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    id          = db.Column(db.Integer, primary_key=True)
+    channel_id  = db.Column(db.Integer, db.ForeignKey('channel.id'), nullable=False)
+    sender_id   = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     sender_name = db.Column(db.String(80))
-    body = db.Column(db.Text, nullable=False)
-    sent_at = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-    is_alert = db.Column(db.Boolean, default=False)
+    body        = db.Column(db.Text, nullable=False)
+    sent_at     = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    is_alert    = db.Column(db.Boolean, default=False)
 
 class PushSubscription(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    id                = db.Column(db.Integer, primary_key=True)
+    user_id           = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     subscription_json = db.Column(db.Text, nullable=False)
-    created_at = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+    created_at        = db.Column(db.String(30), default=lambda: datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
+
+class LiveStatus(db.Model):
+    id        = db.Column(db.Integer, primary_key=True)
+    user_id   = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False, unique=True)
+    username  = db.Column(db.String(80))
+    last_ping = db.Column(db.DateTime, default=datetime.utcnow)
+    lat       = db.Column(db.String(30))
+    lng       = db.Column(db.String(30))
+    battery   = db.Column(db.Integer, default=100)
+    speed     = db.Column(db.Float, default=0)
+    status    = db.Column(db.String(20), default="Active")
+
+class Alert(db.Model):
+    id         = db.Column(db.Integer, primary_key=True)
+    user_id    = db.Column(db.Integer, db.ForeignKey('user.id'))
+    username   = db.Column(db.String(80))
+    type       = db.Column(db.String(50))
+    message    = db.Column(db.Text)
+    resolved   = db.Column(db.Boolean, default=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
 # ---------------- RATE LIMITER ----------------
 
@@ -166,7 +185,6 @@ def log_event(event_text):
 
 
 def send_slack_dm(slack_user_id, text, blocks=None):
-    """Send a Slack DM to a user by their Slack User ID."""
     if not SLACK_BOT_TOKEN or not slack_user_id:
         return False
     try:
@@ -192,86 +210,55 @@ def send_slack_dm(slack_user_id, text, blocks=None):
 
 
 def notify_slack(message, filename=None):
-    """Send notification to configured Slack user, optionally with a photo."""
     if not SLACK_NOTIFY_USER_ID:
-        print("No SLACK_NOTIFY_USER_ID set")
         return
-
     if filename and filename != "placeholder.jpg" and os.path.exists(os.path.join(UPLOAD_FOLDER, filename)):
-        print(f"Single file notification: {filename}")
         send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, message, filename)
     else:
-        if filename:
-            print(f"File not found or placeholder, sending text-only: {filename}")
-        print("Text-only notification")
         send_slack_dm(SLACK_NOTIFY_USER_ID, message)
 
 
 def send_break_reminder(user_id, username, slack_user_id):
-    """Send break reminders at 20 and 30 minutes."""
     from threading import Timer
 
     def first_reminder():
         with app.app_context():
             if slack_user_id:
-                message = f"""⏰ Break Reminder
-Hey {username}! Your 30-minute break is almost over.
-You have 10 minutes left. Please make sure to sign your end break at the opscenter platform before returning to work."""
+                message = (
+                    f"⏰ Break Reminder\nHey {username}! Your 30-minute break is almost over.\n"
+                    f"You have 10 minutes left. Please sign your end break at the opscenter platform before returning to work."
+                )
                 send_slack_dm(slack_user_id, message)
-                print(f"First break reminder sent to {username}")
-            else:
-                print(f"No Slack ID for {username}, cannot send reminder")
 
     def second_reminder():
         with app.app_context():
-            # Check if break was ended
             latest_start = Break.query.filter_by(user_id=user_id, action="Start").order_by(Break.id.desc()).first()
-            latest_end = Break.query.filter_by(user_id=user_id, action="End").order_by(Break.id.desc()).first()
-
+            latest_end   = Break.query.filter_by(user_id=user_id, action="End").order_by(Break.id.desc()).first()
             break_not_ended = not latest_end or (latest_start and latest_start.id > latest_end.id)
-
             if break_not_ended and slack_user_id:
-                message = f"""⚠️ BREAK OVER
-Hey {username}! Your 30-minute break has ended.
-You are now over your break time. Please END YOUR BREAK immediately on the opscenter platform.
-Thank you!"""
+                message = (
+                    f"⚠️ BREAK OVER\nHey {username}! Your 30-minute break has ended.\n"
+                    f"You are now over your break time. Please END YOUR BREAK immediately on the opscenter platform."
+                )
                 send_slack_dm(slack_user_id, message)
-                print(f"Second (overtime) reminder sent to {username}")
-            elif not break_not_ended:
-                print(f"Break already ended for {username}, no second reminder sent")
 
-    # Schedule reminders at 1200s (20 min) and 1800s (30 min)
     Timer(1200.0, first_reminder).start()
     Timer(1800.0, second_reminder).start()
-    print(f"Break reminders scheduled for {username} at 20 and 30 minutes")
 
 
 def notify_slack_with_files(message, filenames):
-    """Send notification with multiple photos - ENHANCED."""
     if not SLACK_NOTIFY_USER_ID:
-        print("No SLACK_NOTIFY_USER_ID set")
         return
-
     valid_files = [f for f in filenames if f and f != "placeholder.jpg" and os.path.exists(os.path.join(UPLOAD_FOLDER, f))]
-    print(f"Found {len(valid_files)} valid files: {valid_files}")
-
     if not valid_files:
-        print("Sending text-only notification")
         send_slack_dm(SLACK_NOTIFY_USER_ID, message)
         return
-
-    # Send first photo with full message, others as supplements
     for i, filename in enumerate(valid_files):
         caption = message if i == 0 else f"📎 Additional Photo {i+1}/{len(valid_files)}"
-        success = send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, caption, filename)
-        if not success:
-            print(f"Failed to send photo {i+1}: {filename}")
-        else:
-            print(f"Sent photo {i+1}: {filename}")
+        send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, caption, filename)
 
 
 def get_slack_dm_channel(slack_user_id):
-    """Open or get DM channel ID for a user."""
     if not SLACK_BOT_TOKEN or not slack_user_id:
         return None
     try:
@@ -283,12 +270,8 @@ def get_slack_dm_channel(slack_user_id):
             timeout=10
         )
         data = res.json()
-        print(f"DEBUG: conversations.open response: {data}")
         if data.get("ok") and data.get("channel"):
-            channel_id = data["channel"]["id"]
-            print(f"DEBUG: Got DM channel ID: {channel_id}")
-            return channel_id
-        print(f"DEBUG: Failed to open DM channel: {data.get('error')}")
+            return data["channel"]["id"]
         return None
     except Exception as ex:
         print(f"Error opening DM channel: {ex}")
@@ -296,27 +279,16 @@ def get_slack_dm_channel(slack_user_id):
 
 
 def send_slack_dm_with_file(slack_user_id, caption, filename):
-    """Send Slack DM with file attachment - Using new upload API."""
     if not SLACK_BOT_TOKEN or not slack_user_id:
-        print("Missing credentials for file DM")
         return send_slack_dm(slack_user_id, caption)
-
     photo_path = os.path.join(UPLOAD_FOLDER, filename)
     if not os.path.exists(photo_path):
-        print(f"Photo not found: {photo_path}")
         return send_slack_dm(slack_user_id, f"{caption}\n\n[Photo missing: {filename}]")
-
     try:
         import requests
-
-        # Step 1: Get DM channel
-        print(f"Uploading {filename} to Slack DM {slack_user_id}")
         channel_id = get_slack_dm_channel(slack_user_id)
         if not channel_id:
-            print("Could not open DM channel, sending text only")
             return send_slack_dm(slack_user_id, caption)
-
-        # Step 2: Get upload URL using new API
         file_size = os.path.getsize(photo_path)
         upload_url_res = requests.post(
             "https://slack.com/api/files.getUploadURLExternal",
@@ -325,107 +297,44 @@ def send_slack_dm_with_file(slack_user_id, caption, filename):
             timeout=15
         )
         upload_data = upload_url_res.json()
-        print(f"getUploadURLExternal response: {upload_data}")
-
         if not upload_data.get("ok"):
-            print(f"Failed to get upload URL: {upload_data.get('error')}")
             return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed: {upload_data.get('error')}")
-
         upload_url = upload_data.get("upload_url")
-        file_id = upload_data.get("file_id")
-
+        file_id    = upload_data.get("file_id")
         if not upload_url or not file_id:
-            print("Missing upload_url or file_id in response")
             return send_slack_dm(slack_user_id, caption)
-
-        # Step 3: Upload file to the provided URL
         with open(photo_path, 'rb') as img:
-            upload_res = requests.post(
-                upload_url,
-                data=img.read(),
-                timeout=30
-            )
-        print(f"File upload to external URL status: {upload_res.status_code}")
-
+            upload_res = requests.post(upload_url, data=img.read(), timeout=30)
         if upload_res.status_code != 200:
-            print(f"Failed to upload file to external URL")
             return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed")
-
-        # Step 4: Complete the upload to send to channel
         complete_res = requests.post(
             "https://slack.com/api/files.completeUploadExternal",
             headers={"Authorization": f"Bearer {SLACK_BOT_TOKEN}", "Content-Type": "application/json"},
-            json={
-                "files": [{"id": file_id, "title": filename}],
-                "channel_id": channel_id,
-                "initial_comment": caption
-            },
+            json={"files": [{"id": file_id, "title": filename}], "channel_id": channel_id, "initial_comment": caption},
             timeout=15
         )
         complete_data = complete_res.json()
-        print(f"completeUploadExternal response: {complete_data}")
-
         if complete_data.get("ok"):
-            print(f"File uploaded successfully to {channel_id}")
             return True
-        else:
-            error_msg = complete_data.get('error', 'Unknown error')
-            print(f"Complete upload failed: {error_msg}")
-            return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed: {error_msg}")
-
+        return send_slack_dm(slack_user_id, f"{caption}\n\nPhoto upload failed: {complete_data.get('error')}")
     except Exception as ex:
         print(f"File upload exception: {ex}")
         return send_slack_dm(slack_user_id, f"{caption}\n\nUpload error occurred")
 
 
-def send_telegram_alert(action, filename, lat=None, lng=None, timestamp=None):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        return False
-    try:
-        caption = f"{action} break by {session.get('username', 'unknown')} at {timestamp or datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\nLocation: {lat or 'N/A'}, {lng or 'N/A'}"
-        photo_path = os.path.join(UPLOAD_FOLDER, filename)
-        if not os.path.exists(photo_path):
-            return False
-        import requests
-        with open(photo_path, 'rb') as img:
-            res = requests.post(
-                f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
-                data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption},
-                files={'photo': img},
-                timeout=30
-            )
-        return res.status_code == 200
-    except Exception as ex:
-        print(f"Telegram send failed: {ex}")
-        return False
-
-
 def check_daily_completion(user_id, target_date=None):
     if target_date is None:
         target_date = datetime.now().strftime('%Y-%m-%d')
-    log_today = Log.query.filter(
-        Log.user_id == user_id,
-        Log.submitted_at.like(f"{target_date}%")
-    ).first()
-    breaks_today = Break.query.filter(
-        Break.user_id == user_id,
-        Break.timestamp.like(f"{target_date}%")
-    ).all()
-    has_start = any(b.action == 'Start' for b in breaks_today)
-    has_end = any(b.action == 'End' for b in breaks_today)
-    eta_today = Eta.query.filter(
-        Eta.user_id == user_id,
-        Eta.timestamp.like(f"{target_date}%")
-    ).first()
+    log_today    = Log.query.filter(Log.user_id == user_id, Log.submitted_at.like(f"{target_date}%")).first()
+    breaks_today = Break.query.filter(Break.user_id == user_id, Break.timestamp.like(f"{target_date}%")).all()
+    has_start    = any(b.action == 'Start' for b in breaks_today)
+    has_end      = any(b.action == 'End' for b in breaks_today)
+    eta_today    = Eta.query.filter(Eta.user_id == user_id, Eta.timestamp.like(f"{target_date}%")).first()
     return {
-        'has_log': bool(log_today),
-        'has_break_start': has_start,
-        'has_break_end': has_end,
+        'has_log': bool(log_today), 'has_break_start': has_start, 'has_break_end': has_end,
         'has_eta': bool(eta_today),
         'is_complete': bool(log_today and has_start and has_end and eta_today),
-        'log': log_today,
-        'breaks': breaks_today,
-        'eta': eta_today
+        'log': log_today, 'breaks': breaks_today, 'eta': eta_today
     }
 
 
@@ -437,62 +346,61 @@ def send_transmission(user_id, completion_data):
         user = User.query.get(user_id)
         if not user:
             return False
-        log = completion_data['log']
-        breaks = completion_data['breaks']
-        eta = completion_data['eta']
-        address = Address.query.filter_by(assigned_op_id=user_id).first()
+        log         = completion_data['log']
+        breaks      = completion_data['breaks']
+        eta         = completion_data['eta']
+        address     = Address.query.filter_by(assigned_op_id=user_id).first()
         break_start = next((b for b in breaks if b.action == 'Start'), None)
-        break_end = next((b for b in breaks if b.action == 'End'), None)
+        break_end   = next((b for b in breaks if b.action == 'End'), None)
         shift_duration = ""
         if log.start_shift_time and log.end_shift_time:
             try:
                 start = datetime.strptime(log.start_shift_time, '%H:%M')
-                end = datetime.strptime(log.end_shift_time, '%H:%M')
+                end   = datetime.strptime(log.end_shift_time, '%H:%M')
                 if end < start:
                     end += timedelta(days=1)
                 duration = end - start
                 hours, remainder = divmod(duration.seconds, 3600)
                 minutes = remainder // 60
                 shift_duration = f"{hours}h {minutes:02d}m"
-            except:
+            except Exception:
                 shift_duration = "N/A"
         break_duration = ""
         if break_start and break_end:
             try:
-                start_dt = datetime.strptime(break_start.timestamp, '%Y-%m-%d %H:%M:%S')
-                end_dt = datetime.strptime(break_end.timestamp, '%Y-%m-%d %H:%M:%S')
-                duration = end_dt - start_dt
-                minutes = duration.seconds // 60
+                start_dt   = datetime.strptime(break_start.timestamp, '%Y-%m-%d %H:%M:%S')
+                end_dt     = datetime.strptime(break_end.timestamp, '%Y-%m-%d %H:%M:%S')
+                duration   = end_dt - start_dt
+                minutes    = duration.seconds // 60
                 break_duration = f"{minutes} min"
-            except:
+            except Exception:
                 break_duration = "N/A"
         distance = ""
         if log.start_mileage and log.end_mileage:
             try:
                 distance = str(log.end_mileage - log.start_mileage)
-            except:
+            except Exception:
                 distance = "N/A"
         try:
-            date_obj = datetime.strptime(log.submitted_at, '%Y-%m-%d %H:%M:%S')
+            date_obj       = datetime.strptime(log.submitted_at, '%Y-%m-%d %H:%M:%S')
             formatted_date = date_obj.strftime('%A, %b %d %Y')
-            filed_time = date_obj.strftime('%H:%M')
-        except:
+            filed_time     = date_obj.strftime('%H:%M')
+        except Exception:
             formatted_date = log.submitted_at.split(' ')[0]
-            filed_time = log.submitted_at.split(' ')[1][:5]
-        message = f"""TRANSMISSION COMPLETE
-{user.username.upper()} | {formatted_date} {filed_time}
-
-ASSIGNMENT: {address.address_text if address else 'No assignment'}
-
-TELEMETRY: {log.start_mileage or 'N/A'} -> {log.end_mileage or 'N/A'} mi ({distance} mi)
-SHIFT: {log.start_shift_time or 'N/A'}-{log.end_shift_time or 'N/A'} ({shift_duration})
-GPS: {log.lat or 'N/A'}, {log.lng or 'N/A'}
-
-BREAK: {break_start.timestamp.split(' ')[1][:5] if break_start else 'N/A'}-{break_end.timestamp.split(' ')[1][:5] if break_end else 'N/A'} ({break_duration})
-
-ETA: {eta.timestamp.split(' ')[1][:5] if eta else 'N/A'} | GPS: {eta.lat or 'N/A'}, {eta.lng or 'N/A'} if eta else 'N/A'
-
-Photos: 7 attached"""
+            filed_time     = log.submitted_at.split(' ')[1][:5]
+        message = (
+            f"TRANSMISSION COMPLETE\n"
+            f"{user.username.upper()} | {formatted_date} {filed_time}\n\n"
+            f"ASSIGNMENT: {address.address_text if address else 'No assignment'}\n\n"
+            f"TELEMETRY: {log.start_mileage or 'N/A'} -> {log.end_mileage or 'N/A'} mi ({distance} mi)\n"
+            f"SHIFT: {log.start_shift_time or 'N/A'}-{log.end_shift_time or 'N/A'} ({shift_duration})\n"
+            f"GPS: {log.lat or 'N/A'}, {log.lng or 'N/A'}\n\n"
+            f"BREAK: {break_start.timestamp.split(' ')[1][:5] if break_start else 'N/A'}-"
+            f"{break_end.timestamp.split(' ')[1][:5] if break_end else 'N/A'} ({break_duration})\n\n"
+            f"ETA: {eta.timestamp.split(' ')[1][:5] if eta else 'N/A'} | "
+            f"GPS: {eta.lat or 'N/A'}, {eta.lng or 'N/A'}\n\n"
+            f"Photos: 7 attached"
+        )
         res = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             data={'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'HTML'},
@@ -502,12 +410,12 @@ Photos: 7 attached"""
             return False
         photo_fields = [
             ('Start Odometer', log.start_photo),
-            ('End Odometer', log.end_mileage_photo),
-            ('Shift In', log.start_shift_photo),
-            ('Shift Out', log.end_shift_photo),
-            ('Break Start', break_start.photo if break_start else None),
-            ('Break End', break_end.photo if break_end else None),
-            ('ETA Proof', eta.photo if eta else None)
+            ('End Odometer',   log.end_mileage_photo),
+            ('Shift In',       log.start_shift_photo),
+            ('Shift Out',      log.end_shift_photo),
+            ('Break Start',    break_start.photo if break_start else None),
+            ('Break End',      break_end.photo if break_end else None),
+            ('ETA Proof',      eta.photo if eta else None)
         ]
         for label, photo_filename in photo_fields:
             if photo_filename and photo_filename != 'placeholder.jpg':
@@ -518,10 +426,9 @@ Photos: 7 attached"""
                             requests.post(
                                 f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto",
                                 data={'chat_id': TELEGRAM_CHAT_ID, 'caption': label},
-                                files={'photo': img},
-                                timeout=30
+                                files={'photo': img}, timeout=30
                             )
-                    except:
+                    except Exception:
                         pass
         return True
     except Exception as ex:
@@ -548,7 +455,7 @@ def save_file(file):
         return None
     if not allowed_file(file.filename):
         return None
-    ext = os.path.splitext(file.filename)[1].lower()
+    ext      = os.path.splitext(file.filename)[1].lower()
     filename = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex}{ext}"
     file.save(os.path.join(UPLOAD_FOLDER, filename))
     return filename
@@ -609,7 +516,7 @@ def get_or_create_general_channel():
 def get_dm_channel(user_a_id, user_b_id):
     a_channels = {m.channel_id for m in ChannelMember.query.filter_by(user_id=user_a_id).all()}
     b_channels = {m.channel_id for m in ChannelMember.query.filter_by(user_id=user_b_id).all()}
-    shared = a_channels & b_channels
+    shared     = a_channels & b_channels
     for cid in shared:
         ch = Channel.query.get(cid)
         if ch and ch.is_dm:
@@ -644,39 +551,29 @@ def parse_mentions(body):
 def init_db():
     with app.app_context():
         db.create_all()
-        # Add slack_user_id column if it doesn't exist yet (safe migration)
         try:
             with db.engine.connect() as conn:
-                # Check if column exists first
                 if 'postgresql' in str(db.engine.url).lower():
-                    # PostgreSQL
                     result = conn.execute(db.text("""
-                        SELECT column_name FROM information_schema.columns 
+                        SELECT column_name FROM information_schema.columns
                         WHERE table_name = 'user' AND column_name = 'slack_user_id'
                     """))
                     if not result.fetchone():
-                        conn.execute(db.text("ALTER TABLE \"user\" ADD COLUMN slack_user_id VARCHAR(50)"))
+                        conn.execute(db.text('ALTER TABLE "user" ADD COLUMN slack_user_id VARCHAR(50)'))
                 else:
-                    # SQLite
-                    result = conn.execute(db.text("PRAGMA table_info(user)"))
+                    result  = conn.execute(db.text("PRAGMA table_info(user)"))
                     columns = [row[1] for row in result.fetchall()]
                     if 'slack_user_id' not in columns:
                         conn.execute(db.text("ALTER TABLE user ADD COLUMN slack_user_id VARCHAR(50)"))
                 conn.commit()
         except Exception as e:
             print(f"Migration info: {e}")
-            pass  # Column already exists or migration failed
         if not User.query.first():
-            admin = User(
-                username="admin",
-                password=generate_password_hash("admin"),
-                role="admin"
-            )
+            admin = User(username="admin", password=generate_password_hash("admin"), role="admin")
             db.session.add(admin)
             db.session.add(Event(time=datetime.now().strftime("%Y-%m-%d %H:%M"), event="System Initialized"))
             db.session.commit()
             print("Default admin created. Username: admin | Password: admin")
-            print("IMPORTANT: Change your admin password after first login.")
         get_or_create_general_channel()
 
 init_db()
@@ -692,16 +589,16 @@ def index():
 @app.route("/login", methods=["POST"])
 @limiter.limit("10 per minute")
 def login():
-    u = request.form.get("username", "").strip()
-    p = request.form.get("password", "").strip()
+    u    = request.form.get("username", "").strip()
+    p    = request.form.get("password", "").strip()
     user = User.query.filter_by(username=u).first()
     if user and check_password_hash(user.password, p):
         user.last_login = datetime.now().strftime("%b %d, %y | %H:%M")
         db.session.commit()
-        session.permanent = True
-        session["user_id"] = user.id
-        session["username"] = user.username
-        session["role"] = user.role
+        session.permanent    = True
+        session["user_id"]   = user.id
+        session["username"]  = user.username
+        session["role"]      = user.role
         get_or_create_general_channel()
         return redirect(url_for("admin") if user.role == "admin" else url_for("op"))
     return redirect(url_for("index"))
@@ -728,9 +625,9 @@ def create_user():
 @app.route("/update_user", methods=["POST"])
 @login_required
 def update_user():
-    target_u = request.form.get("target_username")
-    new_u = request.form.get("new_username", "").strip()
-    new_p = request.form.get("new_password", "").strip()
+    target_u  = request.form.get("target_username")
+    new_u     = request.form.get("new_username", "").strip()
+    new_p     = request.form.get("new_password", "").strip()
     new_slack = request.form.get("slack_user_id", "").strip()
     if session["role"] != "admin" and target_u != session["username"]:
         return "Unauthorized", 403
@@ -799,8 +696,8 @@ def delete_eta(eta_id):
 @admin_required
 def edit_log(log_id):
     record = Log.query.get_or_404(log_id)
-    form = request.form
-    files = request.files
+    form   = request.form
+    files  = request.files
     try:
         record.start_mileage = int(form.get("start_mileage", record.start_mileage))
     except (ValueError, TypeError):
@@ -810,10 +707,10 @@ def edit_log(log_id):
     except (ValueError, TypeError):
         pass
     record.start_shift_time = form.get("start_shift_time") or record.start_shift_time
-    record.end_shift_time = form.get("end_shift_time") or record.end_shift_time
-    record.notes = form.get("notes", record.notes)
-    record.lat = form.get("lat", record.lat)
-    record.lng = form.get("lng", record.lng)
+    record.end_shift_time   = form.get("end_shift_time") or record.end_shift_time
+    record.notes            = form.get("notes", record.notes)
+    record.lat              = form.get("lat", record.lat)
+    record.lng              = form.get("lng", record.lng)
     for field in ["start_photo", "end_mileage_photo", "start_shift_photo", "end_shift_photo", "eta_img"]:
         new_file = save_file(files.get(field))
         if new_file:
@@ -825,15 +722,15 @@ def edit_log(log_id):
 @app.route("/edit_break/<int:break_id>", methods=["POST"])
 @admin_required
 def edit_break(break_id):
-    record = Break.query.get_or_404(break_id)
-    form = request.form
+    record    = Break.query.get_or_404(break_id)
+    form      = request.form
     new_photo = save_file(request.files.get("photo"))
     if new_photo:
         record.photo = new_photo
     record.action = form.get("action", record.action)
-    record.lat = form.get("lat", record.lat)
-    record.lng = form.get("lng", record.lng)
-    ts_value = form.get("timestamp")
+    record.lat    = form.get("lat", record.lat)
+    record.lng    = form.get("lng", record.lng)
+    ts_value      = form.get("timestamp")
     if ts_value:
         try:
             record.timestamp = datetime.strptime(ts_value, "%Y-%m-%dT%H:%M").strftime("%Y-%m-%d %H:%M:%S")
@@ -846,14 +743,14 @@ def edit_break(break_id):
 @app.route("/edit_eta/<int:eta_id>", methods=["POST"])
 @admin_required
 def edit_eta(eta_id):
-    record = Eta.query.get_or_404(eta_id)
-    form = request.form
+    record    = Eta.query.get_or_404(eta_id)
+    form      = request.form
     new_photo = save_file(request.files.get("photo"))
     if new_photo:
         record.photo = new_photo
     record.lat = form.get("lat", record.lat)
     record.lng = form.get("lng", record.lng)
-    ts_value = form.get("timestamp")
+    ts_value   = form.get("timestamp")
     if ts_value:
         try:
             record.timestamp = datetime.strptime(ts_value, "%Y-%m-%dT%H:%M").strftime("%Y-%m-%d %H:%M:%S")
@@ -873,15 +770,10 @@ def submit():
     except ValueError:
         return "Invalid mileage data", 400
     log = Log(
-        user_id=session["user_id"],
-        username_snapshot=session["username"],
-        start_mileage=s_m,
-        end_mileage=e_m,
-        start_shift_time=f.get("start_shift_time"),
-        end_shift_time=f.get("end_shift_time"),
-        notes=f.get("eta", "No notes"),
-        lat=f.get("lat"),
-        lng=f.get("lng"),
+        user_id=session["user_id"], username_snapshot=session["username"],
+        start_mileage=s_m, end_mileage=e_m,
+        start_shift_time=f.get("start_shift_time"), end_shift_time=f.get("end_shift_time"),
+        notes=f.get("eta", "No notes"), lat=f.get("lat"), lng=f.get("lng"),
         start_photo=save_file(fls.get("start_photo")) or "placeholder.jpg",
         end_mileage_photo=save_file(fls.get("end_mileage_photo")) or "placeholder.jpg",
         start_shift_photo=save_file(fls.get("start_shift_photo")) or "placeholder.jpg",
@@ -890,14 +782,13 @@ def submit():
     )
     db.session.add(log)
     db.session.commit()
-    # Send Slack notification with all photos
     try:
         distance = e_m - s_m
-        message = f"""📊 Daily Telemetry Complete
-Operator: {session['username']}
-Mileage: {s_m} → {e_m} ({distance} mi)
-Shift: {f.get('start_shift_time')} - {f.get('end_shift_time')}
-All photos uploaded"""
+        message  = (
+            f"📊 Daily Telemetry Complete\nOperator: {session['username']}\n"
+            f"Mileage: {s_m} → {e_m} ({distance} mi)\n"
+            f"Shift: {f.get('start_shift_time')} - {f.get('end_shift_time')}\nAll photos uploaded"
+        )
         photos = [log.start_photo, log.end_mileage_photo, log.start_shift_photo, log.end_shift_photo, log.eta_img]
         notify_slack_with_files(message, photos)
     except Exception as e:
@@ -908,8 +799,8 @@ All photos uploaded"""
 @app.route("/break_action", methods=["POST"])
 @login_required
 def break_action():
-    f = request.form
-    fls = request.files
+    f      = request.form
+    fls    = request.files
     action = f.get("action")
     if action not in ["Start", "End"]:
         return "Invalid break action", 400
@@ -919,36 +810,21 @@ def break_action():
     filename = save_file(photo)
     if not filename:
         return "Invalid photo", 400
-    lat = f.get("lat") or "N/A"
-    lng = f.get("lng") or "N/A"
+    lat       = f.get("lat") or "N/A"
+    lng       = f.get("lng") or "N/A"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    brk = Break(
-        user_id=session['user_id'],
-        action=action,
-        timestamp=timestamp,
-        lat=lat,
-        lng=lng,
-        photo=filename
-    )
+    brk = Break(user_id=session['user_id'], action=action, timestamp=timestamp, lat=lat, lng=lng, photo=filename)
     db.session.add(brk)
     log_event(f"{action} break by {session.get('username', 'unknown')} at {timestamp} [{lat}, {lng}]")
     db.session.commit()
-    # Send Slack notification
     try:
         if action == "Start":
-            notify_slack(f"""☕ Break Started
-Operator: {session['username']}
-Time: {timestamp.split(' ')[1]}
-Location: {lat}, {lng}""", filename)
-            # Schedule break reminder after 1 minute - get user's Slack ID
+            notify_slack(f"☕ Break Started\nOperator: {session['username']}\nTime: {timestamp.split(' ')[1]}\nLocation: {lat}, {lng}", filename)
             user = User.query.get(session['user_id'])
             if user:
                 send_break_reminder(session['user_id'], session['username'], user.slack_user_id)
         else:
-            notify_slack(f"""🏁 Break Ended
-Operator: {session['username']}
-Time: {timestamp.split(' ')[1]}
-Location: {lat}, {lng}""", filename)
+            notify_slack(f"🏁 Break Ended\nOperator: {session['username']}\nTime: {timestamp.split(' ')[1]}\nLocation: {lat}, {lng}", filename)
     except Exception as e:
         print(f"Slack notification error: {e}")
     if action == "End":
@@ -958,33 +834,23 @@ Location: {lat}, {lng}""", filename)
 @app.route("/submit_eta", methods=["POST"])
 @login_required
 def submit_eta():
-    f = request.form
-    fls = request.files
-    photo = fls.get("photo")
+    f      = request.form
+    fls    = request.files
+    photo  = fls.get("photo")
     if not photo:
         return "Photo required", 400
     filename = save_file(photo)
     if not filename:
         return "Invalid photo", 400
-    lat = f.get("lat") or "N/A"
-    lng = f.get("lng") or "N/A"
+    lat       = f.get("lat") or "N/A"
+    lng       = f.get("lng") or "N/A"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    eta_record = Eta(
-        user_id=session['user_id'],
-        timestamp=timestamp,
-        lat=lat,
-        lng=lng,
-        photo=filename
-    )
+    eta_record = Eta(user_id=session['user_id'], timestamp=timestamp, lat=lat, lng=lng, photo=filename)
     db.session.add(eta_record)
     log_event(f"ETA photo submitted by {session.get('username', 'unknown')} at {timestamp} [{lat}, {lng}]")
     db.session.commit()
-    # Send Slack notification
     try:
-        notify_slack(f"""📍 ETA Location Submitted
-Operator: {session['username']}
-Time: {timestamp.split(' ')[1]}
-Location: {lat}, {lng}""", filename)
+        notify_slack(f"📍 ETA Location Submitted\nOperator: {session['username']}\nTime: {timestamp.split(' ')[1]}\nLocation: {lat}, {lng}", filename)
     except Exception as e:
         print(f"Slack notification error: {e}")
     trigger_transmission_check(session['user_id'])
@@ -993,8 +859,8 @@ Location: {lat}, {lng}""", filename)
 @app.route("/set_address", methods=["POST"])
 @admin_required
 def set_address():
-    addr_text = request.form.get("address_text", "").strip()
-    op_id = request.form.get("op_id")
+    addr_text    = request.form.get("address_text", "").strip()
+    op_id        = request.form.get("op_id")
     booking_time = request.form.get("booking_time", "").strip()
     if not addr_text or not op_id:
         return "Missing address or operator", 400
@@ -1004,63 +870,20 @@ def set_address():
     if not op:
         return "Invalid operator", 400
     Address.query.filter_by(assigned_op_id=op_id).delete()
-    addr = Address(
-        address_text=addr_text,
-        assigned_op_id=op_id,
-        created_by_admin_id=session["user_id"]
-    )
+    addr = Address(address_text=addr_text, assigned_op_id=op_id, created_by_admin_id=session["user_id"])
     db.session.add(addr)
     log_event(f"Address set for {op.username}: {addr_text}")
     db.session.commit()
-
-    # ── Send Slack DM to operator if they have a Slack ID set ──
     if op.slack_user_id:
         blocks = [
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": "New Address Assignment",
-                    "emoji": False
-                }
-            },
-            {
-                "type": "divider"
-            },
-            {
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Address:* {addr_text}"
-                }
-            }
+            {"type": "header", "text": {"type": "plain_text", "text": "New Address Assignment", "emoji": False}},
+            {"type": "divider"},
+            {"type": "section", "text": {"type": "mrkdwn", "text": f"*Address:* {addr_text}"}}
         ]
-        
         if booking_time:
-            blocks.append({
-                "type": "section",
-                "text": {
-                    "type": "mrkdwn",
-                    "text": f"*Booking Time:* {booking_time}\n\nPlease be on time for your scheduled appointment."
-                }
-            })
-        
-        blocks.append({
-            "type": "context",
-            "elements": [
-                {
-                    "type": "mrkdwn",
-                    "text": f"Assigned by OpsCenter at {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                }
-            ]
-        })
-        
-        send_slack_dm(
-            op.slack_user_id,
-            "",
-            blocks=blocks
-        )
-
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Booking Time:* {booking_time}\n\nPlease be on time for your scheduled appointment."}})
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"Assigned by OpsCenter at {datetime.now().strftime('%Y-%m-%d %H:%M')}"}]})
+        send_slack_dm(op.slack_user_id, "", blocks=blocks)
     return redirect(url_for("admin"))
 
 @app.route("/export_csv")
@@ -1075,12 +898,8 @@ def export_csv():
             dist = log.end_mileage - log.start_mileage
         except Exception:
             dist = "ERR"
-        cw.writerow([
-            log.username_snapshot, dt_parts[0], dt_parts[1],
-            log.start_mileage, log.end_mileage, dist,
-            log.start_shift_time, log.end_shift_time,
-            log.lat or "N/A", log.lng or "N/A", log.notes
-        ])
+        cw.writerow([log.username_snapshot, dt_parts[0], dt_parts[1], log.start_mileage, log.end_mileage, dist,
+                     log.start_shift_time, log.end_shift_time, log.lat or "N/A", log.lng or "N/A", log.notes])
     response = make_response(si.getvalue())
     response.headers["Content-Disposition"] = f"attachment; filename=OP_REPORT_{datetime.now().strftime('%Y%m%d_%H%M')}.csv"
     response.headers["Content-type"] = "text/csv"
@@ -1089,21 +908,15 @@ def export_csv():
 @app.route("/admin")
 @admin_required
 def admin():
-    all_users = User.query.all()
-    all_logs = Log.query.order_by(Log.submitted_at).all()
-    all_breaks = Break.query.order_by(Break.timestamp.desc()).all()
-    all_etas = Eta.query.order_by(Eta.timestamp.desc()).all()
+    all_users     = User.query.all()
+    all_logs      = Log.query.order_by(Log.submitted_at).all()
+    all_breaks    = Break.query.order_by(Break.timestamp.desc()).all()
+    all_etas      = Eta.query.order_by(Eta.timestamp.desc()).all()
     all_addresses = Address.query.order_by(Address.timestamp.desc()).all()
-    events = Event.query.order_by(Event.id.desc()).limit(50).all()
-
-    user_map = {u.id: u for u in all_users}
-
-    grouped_logs = {}
-    grouped_breaks = {}
-    grouped_etas = {}
-    grouped_addresses = {}
+    events        = Event.query.order_by(Event.id.desc()).limit(50).all()
+    user_map      = {u.id: u for u in all_users}
+    grouped_logs, grouped_breaks, grouped_etas, grouped_addresses = {}, {}, {}, {}
     total_miles = 0
-
     for log in all_logs:
         name = log.username_snapshot
         date = log.submitted_at.split(" ")[0]
@@ -1112,67 +925,53 @@ def admin():
             total_miles += (log.end_mileage - log.start_mileage)
         except Exception:
             pass
-
     for br in all_breaks:
         user = user_map.get(br.user_id)
         if not user:
             continue
         date = br.timestamp.split(" ")[0]
         grouped_breaks.setdefault(user.username, {}).setdefault(date, []).append(br)
-
     for et in all_etas:
         user = user_map.get(et.user_id)
         if not user:
             continue
         date = et.timestamp.split(" ")[0]
         grouped_etas.setdefault(user.username, {}).setdefault(date, []).append(et)
-
     for addr in all_addresses:
         user = user_map.get(addr.assigned_op_id)
         if not user:
             continue
         date = addr.timestamp.split(" ")[0]
         grouped_addresses.setdefault(user.username, {}).setdefault(date, []).append(addr)
-
     all_op_names = sorted(set(
-        list(grouped_logs.keys()) +
-        list(grouped_breaks.keys()) +
-        list(grouped_etas.keys()) +
-        list(grouped_addresses.keys())
+        list(grouped_logs.keys()) + list(grouped_breaks.keys()) +
+        list(grouped_etas.keys()) + list(grouped_addresses.keys())
     ))
-
-    unread = get_unread_count(session["user_id"])
-
+    unread            = get_unread_count(session["user_id"])
+    live_alerts_count = Alert.query.filter_by(resolved=False).count()
+    cutoff            = datetime.utcnow() - timedelta(minutes=3)
+    live_ops          = LiveStatus.query.filter(LiveStatus.last_ping >= cutoff).all()
     return render_template_string(ADMIN_HTML,
-        grouped_logs=grouped_logs,
-        grouped_breaks=grouped_breaks,
-        grouped_etas=grouped_etas,
-        grouped_addresses=grouped_addresses,
-        all_op_names=all_op_names,
-        all_users=all_users,
-        events=events,
-        total_miles=total_miles,
-        log_count=len(all_logs),
-        unread_count=unread,
-        vapid_public_key=VAPID_PUBLIC_KEY
+        grouped_logs=grouped_logs, grouped_breaks=grouped_breaks,
+        grouped_etas=grouped_etas, grouped_addresses=grouped_addresses,
+        all_op_names=all_op_names, all_users=all_users, events=events,
+        total_miles=total_miles, log_count=len(all_logs),
+        unread_count=unread, vapid_public_key=VAPID_PUBLIC_KEY,
+        live_alerts_count=live_alerts_count, live_ops=live_ops
     )
 
 @app.route("/op")
 @login_required
 def op():
-    user_logs = Log.query.filter_by(user_id=session["user_id"]).order_by(Log.submitted_at.desc()).all()
-    break_records = Break.query.filter_by(user_id=session["user_id"]).order_by(Break.id.desc()).all()
-    in_break = bool(break_records and break_records[0].action == "Start")
+    user_logs        = Log.query.filter_by(user_id=session["user_id"]).order_by(Log.submitted_at.desc()).all()
+    break_records    = Break.query.filter_by(user_id=session["user_id"]).order_by(Break.id.desc()).all()
+    in_break         = bool(break_records and break_records[0].action == "Start")
     assigned_address = Address.query.filter_by(assigned_op_id=session["user_id"]).first()
-    unread = get_unread_count(session["user_id"])
+    unread           = get_unread_count(session["user_id"])
     return render_template_string(OP_HTML,
-        user=session["username"],
-        logs=user_logs,
-        break_records=break_records,
-        in_break=in_break,
-        assigned_address=assigned_address,
-        unread_count=unread,
-        vapid_public_key=VAPID_PUBLIC_KEY
+        user=session["username"], logs=user_logs, break_records=break_records,
+        in_break=in_break, assigned_address=assigned_address,
+        unread_count=unread, vapid_public_key=VAPID_PUBLIC_KEY
     )
 
 @app.route("/uploads/<string:filename>")
@@ -1183,6 +982,17 @@ def uploaded_file(filename):
 
 @app.route("/logout")
 def logout():
+    # Mark operator offline immediately on logout
+    uid = session.get("user_id")
+    if uid:
+        try:
+            status = LiveStatus.query.filter_by(user_id=uid).first()
+            if status:
+                status.status    = "Offline"
+                status.last_ping = datetime.utcnow()
+                db.session.commit()
+        except Exception:
+            pass
     session.clear()
     return redirect(url_for("index"))
 
@@ -1191,62 +1001,45 @@ def logout():
 @app.route("/api/channels")
 @login_required
 def api_channels():
-    uid = session["user_id"]
+    uid      = session["user_id"]
     memberships = ChannelMember.query.filter_by(user_id=uid).all()
-    all_users = {u.id: u.username for u in User.query.all()}
-    result = []
+    all_users   = {u.id: u.username for u in User.query.all()}
+    result      = []
     for m in memberships:
         ch = Channel.query.get(m.channel_id)
         if not ch:
             continue
-        unread = Message.query.filter(
-            Message.channel_id == ch.id,
-            Message.sent_at > m.last_read_at,
-            Message.sender_id != uid
-        ).count()
+        unread   = Message.query.filter(Message.channel_id == ch.id, Message.sent_at > m.last_read_at, Message.sender_id != uid).count()
         last_msg = Message.query.filter_by(channel_id=ch.id).order_by(Message.id.desc()).first()
         display_name = ch.name or "general"
         if ch.is_dm:
             other_members = [x for x in ch.members if x.user_id != uid]
             if other_members:
                 display_name = all_users.get(other_members[0].user_id, "Unknown")
-        result.append({
-            "id": ch.id,
-            "name": display_name,
-            "is_dm": ch.is_dm,
-            "unread": unread,
-            "last_msg": last_msg.body[:40] if last_msg else "",
-            "last_at": last_msg.sent_at if last_msg else ""
-        })
+        result.append({"id": ch.id, "name": display_name, "is_dm": ch.is_dm, "unread": unread,
+                        "last_msg": last_msg.body[:40] if last_msg else "", "last_at": last_msg.sent_at if last_msg else ""})
     result.sort(key=lambda x: x["last_at"], reverse=True)
     return jsonify(result)
-
 
 @app.route("/api/messages/<int:channel_id>")
 @login_required
 def api_get_messages(channel_id):
     uid = session["user_id"]
-    m = ChannelMember.query.filter_by(channel_id=channel_id, user_id=uid).first()
+    m   = ChannelMember.query.filter_by(channel_id=channel_id, user_id=uid).first()
     if not m:
         return jsonify({"error": "Not a member"}), 403
     msgs = Message.query.filter_by(channel_id=channel_id).order_by(Message.id.desc()).limit(60).all()
     msgs.reverse()
-    return jsonify([{
-        "id": msg.id,
-        "sender": msg.sender_name,
-        "body": msg.body,
-        "sent_at": msg.sent_at,
-        "is_alert": msg.is_alert,
-        "is_mine": msg.sender_id == uid
-    } for msg in msgs])
-
+    return jsonify([{"id": msg.id, "sender": msg.sender_name, "body": msg.body,
+                     "sent_at": msg.sent_at, "is_alert": msg.is_alert, "is_mine": msg.sender_id == uid}
+                    for msg in msgs])
 
 @app.route("/api/messages/<int:channel_id>", methods=["POST"])
 @login_required
 def api_send_message(channel_id):
-    uid = session["user_id"]
+    uid   = session["user_id"]
     uname = session["username"]
-    m = ChannelMember.query.filter_by(channel_id=channel_id, user_id=uid).first()
+    m     = ChannelMember.query.filter_by(channel_id=channel_id, user_id=uid).first()
     if not m:
         return jsonify({"error": "Not a member"}), 403
     body = request.json.get("body", "").strip()
@@ -1270,13 +1063,12 @@ def api_send_message(channel_id):
                 db.session.commit()
     return jsonify({"ok": True, "id": msg.id})
 
-
 @app.route("/api/channels/dm", methods=["POST"])
 @login_required
 def api_start_dm():
-    uid = session["user_id"]
+    uid         = session["user_id"]
     target_name = request.json.get("username", "").strip()
-    target = User.query.filter(db.func.lower(User.username) == target_name.lower()).first()
+    target      = User.query.filter(db.func.lower(User.username) == target_name.lower()).first()
     if not target:
         return jsonify({"error": "User not found"}), 404
     if target.id == uid:
@@ -1284,15 +1076,14 @@ def api_start_dm():
     ch = get_dm_channel(uid, target.id)
     return jsonify({"channel_id": ch.id, "name": target.username})
 
-
 @app.route("/api/channels/alert", methods=["POST"])
 @admin_required
 def api_send_alert():
-    uid = session["user_id"]
+    uid  = session["user_id"]
     body = request.json.get("body", "").strip()
     if not body or len(body) > 500:
         return jsonify({"error": "Invalid alert"}), 400
-    ch = get_or_create_general_channel()
+    ch  = get_or_create_general_channel()
     msg = Message(channel_id=ch.id, sender_id=uid, sender_name=session["username"], body=body, is_alert=True)
     db.session.add(msg)
     db.session.commit()
@@ -1301,41 +1092,36 @@ def api_send_alert():
             send_push_to_user(u.id, "⚠️ ALERT — OpsCenter", body[:100], "/op")
     return jsonify({"ok": True})
 
-
 @app.route("/api/channels/read/<int:channel_id>", methods=["POST"])
 @login_required
 def api_mark_read(channel_id):
     uid = session["user_id"]
-    m = ChannelMember.query.filter_by(channel_id=channel_id, user_id=uid).first()
+    m   = ChannelMember.query.filter_by(channel_id=channel_id, user_id=uid).first()
     if m:
         m.last_read_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         db.session.commit()
     return jsonify({"ok": True})
-
 
 @app.route("/api/unread")
 @login_required
 def api_unread():
     return jsonify({"count": get_unread_count(session["user_id"])})
 
-
 @app.route("/api/users")
 @login_required
 def api_users():
-    uid = session["user_id"]
-    users = [{"id": u.id, "username": u.username, "role": u.role}
-             for u in User.query.all() if u.id != uid]
+    uid   = session["user_id"]
+    users = [{"id": u.id, "username": u.username, "role": u.role} for u in User.query.all() if u.id != uid]
     return jsonify(users)
-
 
 @app.route("/api/push/subscribe", methods=["POST"])
 @login_required
 def api_push_subscribe():
-    uid = session["user_id"]
+    uid      = session["user_id"]
     sub_data = request.json
     if not sub_data or "endpoint" not in sub_data:
         return jsonify({"error": "Invalid subscription"}), 400
-    endpoint = sub_data.get("endpoint", "")
+    endpoint      = sub_data.get("endpoint", "")
     existing_subs = PushSubscription.query.filter_by(user_id=uid).all()
     for s in existing_subs:
         try:
@@ -1348,11 +1134,9 @@ def api_push_subscribe():
     db.session.commit()
     return jsonify({"ok": True})
 
-
 @app.route("/api/push/vapid-public-key")
 def api_vapid_public_key():
     return jsonify({"key": VAPID_PUBLIC_KEY})
-
 
 @app.route("/sw.js")
 def service_worker():
@@ -1360,17 +1144,10 @@ def service_worker():
 self.addEventListener('push', function(event) {
     let data = {};
     try { data = event.data.json(); } catch(e) { data = { title: 'OpsCenter', body: event.data ? event.data.text() : 'New message' }; }
-    const options = {
-        body: data.body || 'New message',
-        icon: '/static/icon.png',
-        badge: '/static/badge.png',
-        vibrate: [200, 100, 200],
-        data: { url: data.url || '/' },
-        requireInteraction: false
-    };
+    const options = { body: data.body || 'New message', icon: '/static/icon.png', badge: '/static/badge.png',
+        vibrate: [200, 100, 200], data: { url: data.url || '/' }, requireInteraction: false };
     event.waitUntil(self.registration.showNotification(data.title || 'OpsCenter', options));
 });
-
 self.addEventListener('notificationclick', function(event) {
     event.notification.close();
     const url = event.notification.data && event.notification.data.url ? event.notification.data.url : '/';
@@ -1381,35 +1158,158 @@ self.addEventListener('notificationclick', function(event) {
         if (clients.openWindow) return clients.openWindow(url);
     }));
 });
-
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', () => self.clients.claim());
 """
     response = make_response(sw_js)
-    response.headers["Content-Type"] = "application/javascript"
+    response.headers["Content-Type"]  = "application/javascript"
     response.headers["Cache-Control"] = "no-cache"
     return response
 
-# ---------------- UI COMPONENTS ----------------
+# ─── LIVE TRACKING ROUTES ───────────────────────────────────
+
+@app.route("/api/ping", methods=["POST"])
+@login_required
+def api_ping():
+    data  = request.json or {}
+    uid   = session["user_id"]
+    uname = session["username"]
+    status = LiveStatus.query.filter_by(user_id=uid).first()
+    if status:
+        status.username  = uname
+        status.last_ping = datetime.utcnow()
+    else:
+        status = LiveStatus(user_id=uid, username=uname, last_ping=datetime.utcnow())
+        db.session.add(status)
+    status.lat     = str(data.get("lat", "N/A"))
+    status.lng     = str(data.get("lng", "N/A"))
+    status.battery = int(data.get("battery", 100))
+    status.speed   = float(data.get("speed", 0))
+    status.status  = data.get("status", "Active")
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/go_offline", methods=["POST"])
+@login_required
+def api_go_offline():
+    """Called by the operator browser via sendBeacon on tab close / logout / visibility hidden."""
+    uid = session["user_id"]
+    status = LiveStatus.query.filter_by(user_id=uid).first()
+    if status:
+        status.status    = "Offline"
+        status.last_ping = datetime.utcnow()
+        db.session.commit()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/live_status")
+@login_required
+def api_live_status():
+    # Only return operators seen in the last 3 minutes
+    cutoff   = datetime.utcnow() - timedelta(minutes=3)
+    statuses = LiveStatus.query.filter(LiveStatus.last_ping >= cutoff).all()
+    now      = datetime.utcnow()
+    result   = []
+    for s in statuses:
+        seconds_ago = int((now - s.last_ping).total_seconds()) if s.last_ping else 999
+        result.append({
+            "username":    s.username,
+            "status":      s.status,
+            "lat":         s.lat,
+            "lng":         s.lng,
+            "battery":     s.battery,
+            "speed":       round(s.speed, 1),
+            "last_ping":   s.last_ping.isoformat() if s.last_ping else None,
+            "seconds_ago": seconds_ago,
+        })
+    return jsonify(result)
+
+
+@app.route("/live_map")
+@admin_required
+def live_map():
+    cutoff   = datetime.utcnow() - timedelta(minutes=3)
+    statuses = LiveStatus.query.filter(LiveStatus.last_ping >= cutoff).all()
+    alerts   = Alert.query.filter_by(resolved=False).order_by(Alert.created_at.desc()).limit(10).all()
+    return render_template_string(LIVE_MAP_HTML, statuses=statuses, alerts=alerts)
+
+
+@app.route("/api/alerts")
+@admin_required
+def api_alerts():
+    alerts = Alert.query.filter_by(resolved=False).all()
+    return jsonify([{
+        "id": a.id, "username": a.username, "type": a.type,
+        "message": a.message,
+        "created_at": a.created_at.strftime("%H:%M") if a.created_at else ""
+    } for a in alerts])
+
+
+@app.route("/api/alert/<int:alert_id>/resolve", methods=["POST"])
+@admin_required
+def resolve_alert(alert_id):
+    alert          = Alert.query.get_or_404(alert_id)
+    alert.resolved = True
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+# ─── BACKGROUND ALERT CHECKER ───────────────────────────────
+
+def check_alerts():
+    with app.app_context():
+        # Consider operators offline after 3 minutes of silence
+        three_min_ago = datetime.utcnow() - timedelta(minutes=3)
+        offline_ops   = LiveStatus.query.filter(
+            LiveStatus.last_ping < three_min_ago,
+            LiveStatus.status != "Offline"
+        ).all()
+        for op in offline_ops:
+            op.status = "Offline"
+            existing_alert = Alert.query.filter_by(
+                user_id=op.user_id, type="OFFLINE", resolved=False
+            ).first()
+            if not existing_alert:
+                mins_offline = int((datetime.utcnow() - op.last_ping).total_seconds() / 60)
+                alert = Alert(
+                    user_id=op.user_id, username=op.username,
+                    type="OFFLINE",
+                    message=f"{op.username} has been offline for {mins_offline} min"
+                )
+                db.session.add(alert)
+                user = User.query.get(op.user_id)
+                if user and user.slack_user_id:
+                    send_slack_dm(user.slack_user_id, f"🚨 ADMIN ALERT: {alert.message}")
+        db.session.commit()
+
+
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=check_alerts, trigger="interval", minutes=2)
+scheduler.start()
+
+# ================================================================
+# UI COMPONENTS
+# ================================================================
 
 COMMON_HEAD = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>OpsCenter v3.3 | Tactical</title>
+    <title>OpsCenter v3.5 | Tactical</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root { --accent: #fbbf24; --bg: #0b0f1a; --card: #161e2d; }
         body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: var(--bg); color: #e2e8f0; scroll-behavior: smooth; }
         .font-mono { font-family: 'JetBrains Mono', monospace; }
-        .glass-panel { background: rgba(22, 30, 45, 0.85); backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.08); }
+        .glass-panel { background: rgba(22, 30, 45, 0.85); backdrop-filter: blur(24px); border: 1px solid rgba(255,255,255,0.08); }
         .input-field { background: #0f172a; border: 1px solid #334155; color: white; border-radius: 14px; width:100%; padding: 0.85rem; transition: 0.3s; }
-        .input-field:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 15px rgba(251, 191, 36, 0.15); }
-        .btn-main { background: var(--accent); color: #000; font-weight: 800; border-radius: 14px; transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); text-transform: uppercase; letter-spacing: 0.5px; }
+        .input-field:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 15px rgba(251,191,36,0.15); }
+        .btn-main { background: var(--accent); color: #000; font-weight: 800; border-radius: 14px; transition: 0.3s cubic-bezier(0.4,0,0.2,1); text-transform: uppercase; letter-spacing: 0.5px; }
         .btn-main:hover { transform: translateY(-2px); box-shadow: 0 10px 20px -10px var(--accent); opacity: 0.9; }
         .label-caps { font-size: 10px; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 8px; display: block; }
-        .drawer-content { position: fixed; top: 0; right: -100%; width: 100%; max-width: 450px; height: 100%; background: var(--card); transition: 0.5s cubic-bezier(0.4, 0, 0.2, 1); z-index: 100; padding: 2.5rem; border-left: 1px solid #334155; box-shadow: -20px 0 40px rgba(0,0,0,0.5); overflow-y: auto; }
+        .drawer-content { position: fixed; top: 0; right: -100%; width: 100%; max-width: 450px; height: 100%; background: var(--card); transition: 0.5s cubic-bezier(0.4,0,0.2,1); z-index: 100; padding: 2.5rem; border-left: 1px solid #334155; box-shadow: -20px 0 40px rgba(0,0,0,0.5); overflow-y: auto; }
         .drawer-content.active { right: 0; }
         .transmission-card { position: relative; transition: transform 0.2s ease, box-shadow 0.2s ease; }
         .transmission-card:hover { transform: translateY(-2px); box-shadow: 0 16px 48px rgba(0,0,0,0.25); }
@@ -1431,11 +1331,16 @@ COMMON_HEAD = """
         .modal-close:hover { background: rgba(255,255,255,0.12); color: white; }
         .photo-preview { width: 100%; height: 140px; object-fit: cover; border-radius: 12px; border: 1px solid rgba(255,255,255,0.08); margin-bottom: 0.5rem; }
         .photo-label { font-size: 0.65rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 1.5px; display: block; margin-bottom: 6px; margin-top: 12px; }
-        .sidebar-btn.active { border-color: var(--accent); background: rgba(251, 191, 36, 0.1); color: var(--accent); }
+        .sidebar-btn.active { border-color: var(--accent); background: rgba(251,191,36,0.1); color: var(--accent); }
         ::-webkit-scrollbar { width: 5px; }
         ::-webkit-scrollbar-thumb { background: #334155; border-radius: 10px; }
-
-        /* ── CHAT PANEL ── */
+        .live-map-btn { display: inline-flex; align-items: center; gap: 10px; background: linear-gradient(135deg, rgba(251,191,36,0.15) 0%, rgba(251,191,36,0.05) 100%); border: 1px solid rgba(251,191,36,0.3); color: #fbbf24; font-weight: 800; border-radius: 16px; padding: 0.75rem 1.5rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; text-decoration: none; transition: all 0.3s cubic-bezier(0.4,0,0.2,1); position: relative; overflow: hidden; }
+        .live-map-btn:hover { background: linear-gradient(135deg, rgba(251,191,36,0.25) 0%, rgba(251,191,36,0.1) 100%); border-color: rgba(251,191,36,0.6); transform: translateY(-2px); box-shadow: 0 8px 24px rgba(251,191,36,0.15); }
+        .live-map-btn .pulse-dot { width: 8px; height: 8px; background: #22c55e; border-radius: 50%; position: relative; flex-shrink: 0; }
+        .live-map-btn .pulse-dot::after { content: ''; position: absolute; inset: -3px; border-radius: 50%; border: 2px solid #22c55e; opacity: 0; animation: ping 1.5s ease-out infinite; }
+        @keyframes ping { 0% { opacity: 0.8; transform: scale(0.8); } 100% { opacity: 0; transform: scale(2); } }
+        .live-map-btn .alert-badge { background: #ef4444; color: white; font-size: 0.6rem; font-weight: 900; border-radius: 999px; padding: 2px 7px; margin-left: 4px; animation: pulse-badge 2s ease-in-out infinite; }
+        @keyframes pulse-badge { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
         #chat-panel { position: fixed; bottom: 0; right: 0; width: 100%; max-width: 420px; height: 580px; background: #0f172a; border: 1px solid #1e293b; border-bottom: none; border-radius: 20px 20px 0 0; z-index: 300; display: flex; flex-direction: column; transform: translateY(100%); transition: transform 0.4s cubic-bezier(0.4,0,0.2,1); box-shadow: 0 -20px 60px rgba(0,0,0,0.6); }
         #chat-panel.open { transform: translateY(0); }
         .chat-header { padding: 1rem 1.2rem; border-bottom: 1px solid #1e293b; display: flex; align-items: center; gap: 0.8rem; flex-shrink: 0; background: #0d1424; border-radius: 20px 20px 0 0; }
@@ -1476,7 +1381,7 @@ NAV_BAR = """
             <div class="w-10 h-10 bg-amber-400 rounded-xl flex items-center justify-center text-black font-black italic shadow-lg shadow-amber-400/20">O</div>
             <div class="leading-none">
                 <span class="text-2xl font-black italic tracking-tighter uppercase text-white block">Ops<span class="text-amber-400">Center</span></span>
-                <span class="text-[9px] font-bold text-gray-500 uppercase tracking-[3px]">Mission-Protocol-v3.3</span>
+                <span class="text-[9px] font-bold text-gray-500 uppercase tracking-[3px]">Mission-Protocol-v3.5</span>
             </div>
         </div>
         <div class="flex items-center gap-4">
@@ -1519,11 +1424,9 @@ DRAWER_HTML = """
                 <input type="time" name="booking_time" class="input-field" placeholder="Booking Time">
                 <select name="op_id" class="input-field" required>
                     <option value="">Select Operator</option>
-                    {% for u in all_users %}
-                    {% if u.role == 'op' %}
+                    {% for u in all_users %}{% if u.role == 'op' %}
                     <option value="{{ u.id }}">{{ u.username }}</option>
-                    {% endif %}
-                    {% endfor %}
+                    {% endif %}{% endfor %}
                 </select>
                 <button class="btn-main w-full py-4 text-xs font-black">Assign Address</button>
             </form>
@@ -1578,13 +1481,10 @@ function toggleDrawer(){
 """
 
 CHAT_HTML = """
-<!-- ── CHAT FAB ── -->
 <button class="chat-fab" onclick="toggleChat()" id="chat-fab-btn" title="Team Comms">
     <svg width="24" height="24" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z"/></svg>
     <span class="chat-fab-badge" id="fab-badge" style="display:none">0</span>
 </button>
-
-<!-- ── CHAT PANEL ── -->
 <div id="chat-panel">
     <div class="chat-header">
         <button onclick="toggleChat()" style="background:none;border:none;color:#64748b;cursor:pointer;font-size:1.2rem;line-height:1;padding:0;margin-right:4px">✕</button>
@@ -1613,55 +1513,37 @@ CHAT_HTML = """
         <button class="chat-send-btn" onclick="sendMessage()">Send</button>
     </div>
 </div>
-
 <script>
 const CURRENT_USER = "{{ session['username'] }}";
 const IS_ADMIN = {{ 'true' if session['role'] == 'admin' else 'false' }};
 const VAPID_PUBLIC_KEY = "{{ vapid_public_key }}";
-
-let currentChannelId = null;
-let allUsers = [];
-let chatOpen = false;
-let pollInterval = null;
-let lastMsgId = 0;
+let currentChannelId = null, allUsers = [], chatOpen = false, pollInterval = null, lastMsgId = 0;
 
 async function registerPushNotifications() {
-    if (!('serviceWorker' in navigator) || !('PushManager' in window)) return;
-    if (!VAPID_PUBLIC_KEY) return;
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !VAPID_PUBLIC_KEY) return;
     try {
         const reg = await navigator.serviceWorker.register('/sw.js');
         const existing = await reg.pushManager.getSubscription();
         if (existing) { await savePushSub(existing); return; }
         const permission = await Notification.requestPermission();
         if (permission !== 'granted') return;
-        const sub = await reg.pushManager.subscribe({
-            userVisibleOnly: true,
-            applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
-        });
+        const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY) });
         await savePushSub(sub);
     } catch(e) { console.log('Push setup skipped:', e.message); }
 }
-
 function urlBase64ToUint8Array(base64String) {
     const padding = '='.repeat((4 - base64String.length % 4) % 4);
     const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
     const rawData = atob(base64);
     return Uint8Array.from([...rawData].map(c => c.charCodeAt(0)));
 }
-
 async function savePushSub(sub) {
-    await fetch('/api/push/subscribe', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(sub.toJSON())
-    });
+    await fetch('/api/push/subscribe', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(sub.toJSON()) });
 }
-
 function playPing() {
     try {
         const ctx = new (window.AudioContext || window.webkitAudioContext)();
-        const o = ctx.createOscillator();
-        const g = ctx.createGain();
+        const o = ctx.createOscillator(), g = ctx.createGain();
         o.connect(g); g.connect(ctx.destination);
         o.type = 'sine'; o.frequency.value = 880;
         g.gain.setValueAtTime(0, ctx.currentTime);
@@ -1670,19 +1552,12 @@ function playPing() {
         o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.4);
     } catch(e){}
 }
-
 function toggleChat() {
     chatOpen = !chatOpen;
     document.getElementById('chat-panel').classList.toggle('open', chatOpen);
-    if (chatOpen) {
-        loadChannels();
-        if (!pollInterval) pollInterval = setInterval(pollMessages, 8000);
-        registerPushNotifications();
-    } else {
-        clearInterval(pollInterval); pollInterval = null;
-    }
+    if (chatOpen) { loadChannels(); if (!pollInterval) pollInterval = setInterval(pollMessages, 8000); registerPushNotifications(); }
+    else { clearInterval(pollInterval); pollInterval = null; }
 }
-
 async function loadChannels() {
     const res = await fetch('/api/channels');
     const channels = await res.json();
@@ -1694,20 +1569,12 @@ async function loadChannels() {
         div.className = 'channel-item' + (ch.id === currentChannelId ? ' active' : '');
         div.dataset.id = ch.id;
         div.onclick = () => openChannel(ch.id, ch.name);
-        div.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between">
-            <span class="ch-name">${ch.is_dm ? '💬 ' : '#'}${ch.name}</span>
-            ${ch.unread > 0 ? `<span class="ch-badge">${ch.unread}</span>` : ''}
-        </div>
-        <div style="font-size:0.6rem;color:#475569;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ch.last_msg || ''}</div>`;
+        div.innerHTML = `<div style="display:flex;align-items:center;justify-content:space-between"><span class="ch-name">${ch.is_dm ? '💬 ' : '#'}${ch.name}</span>${ch.unread > 0 ? `<span class="ch-badge">${ch.unread}</span>` : ''}</div><div style="font-size:0.6rem;color:#475569;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${ch.last_msg || ''}</div>`;
         list.appendChild(div);
     });
-    if (!currentChannelId && channels.length > 0) {
-        openChannel(channels[0].id, channels[0].name);
-    }
-    const total = channels.reduce((s, c) => s + c.unread, 0);
-    updateFabBadge(total);
+    if (!currentChannelId && channels.length > 0) openChannel(channels[0].id, channels[0].name);
+    updateFabBadge(channels.reduce((s, c) => s + c.unread, 0));
 }
-
 async function openChannel(channelId, name) {
     currentChannelId = channelId;
     document.getElementById('chat-channel-title').textContent = (name === 'general' ? '#' : '') + name;
@@ -1716,7 +1583,6 @@ async function openChannel(channelId, name) {
     await fetch(`/api/channels/read/${channelId}`, {method:'POST'});
     await loadChannels();
 }
-
 async function loadMessages() {
     if (!currentChannelId) return;
     const res = await fetch(`/api/messages/${currentChannelId}`);
@@ -1724,7 +1590,6 @@ async function loadMessages() {
     renderMessages(msgs);
     if (msgs.length) lastMsgId = msgs[msgs.length - 1].id;
 }
-
 function renderMessages(msgs) {
     const container = document.getElementById('chat-messages');
     const wasAtBottom = container.scrollHeight - container.clientHeight <= container.scrollTop + 40;
@@ -1734,116 +1599,73 @@ function renderMessages(msgs) {
         wrapper.style.cssText = `display:flex;flex-direction:column;align-items:${msg.is_mine ? 'flex-end' : 'flex-start'}`;
         if (!msg.is_mine && !msg.is_alert) {
             const meta = document.createElement('div');
-            meta.className = 'msg-meta';
-            meta.style.marginLeft = '4px';
+            meta.className = 'msg-meta'; meta.style.marginLeft = '4px';
             meta.textContent = msg.sender + ' · ' + msg.sent_at.slice(11,16);
             wrapper.appendChild(meta);
         }
         const bubble = document.createElement('div');
         bubble.className = 'msg-bubble ' + (msg.is_alert ? 'alert' : msg.is_mine ? 'mine' : 'theirs');
-        if (msg.is_alert) {
-            bubble.innerHTML = '⚠️ <strong>ADMIN ALERT</strong><br>' + formatBody(msg.body);
-        } else {
-            bubble.innerHTML = formatBody(msg.body);
-        }
+        bubble.innerHTML = msg.is_alert ? '⚠️ <strong>ADMIN ALERT</strong><br>' + formatBody(msg.body) : formatBody(msg.body);
         if (msg.is_mine) {
             const meta = document.createElement('div');
-            meta.className = 'msg-meta';
-            meta.style.marginRight = '4px';
+            meta.className = 'msg-meta'; meta.style.marginRight = '4px';
             meta.textContent = msg.sent_at.slice(11,16);
-            wrapper.appendChild(bubble);
-            wrapper.appendChild(meta);
-        } else {
-            wrapper.appendChild(bubble);
-        }
+            wrapper.appendChild(bubble); wrapper.appendChild(meta);
+        } else { wrapper.appendChild(bubble); }
         container.appendChild(wrapper);
     });
     if (wasAtBottom) container.scrollTop = container.scrollHeight;
 }
-
 function formatBody(text) {
-    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-               .replace(/@(\w+)/g, '<span class="msg-mention">@$1</span>');
+    return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/@(\w+)/g, '<span class="msg-mention">@$1</span>');
 }
-
 async function sendMessage() {
     const input = document.getElementById('chat-input');
     const body = input.value.trim();
     if (!body || !currentChannelId) return;
-    input.value = '';
-    hideMentionAutocomplete();
-    await fetch(`/api/messages/${currentChannelId}`, {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({body})
-    });
+    input.value = ''; hideMentionAutocomplete();
+    await fetch(`/api/messages/${currentChannelId}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({body}) });
     await loadMessages();
 }
-
 async function pollMessages() {
     if (!currentChannelId) return;
     const res = await fetch(`/api/messages/${currentChannelId}`);
     const msgs = await res.json();
     if (msgs.length && msgs[msgs.length - 1].id !== lastMsgId) {
         const newOnes = msgs.filter(m => m.id > lastMsgId && !m.is_mine);
-        if (newOnes.length > 0) {
-            playPing();
-            newOnes.forEach(m => showToast(`${m.sender}: ${m.body.slice(0,60)}`));
-        }
+        if (newOnes.length > 0) { playPing(); newOnes.forEach(m => showToast(`${m.sender}: ${m.body.slice(0,60)}`)); }
         renderMessages(msgs);
         lastMsgId = msgs[msgs.length - 1].id;
         if (chatOpen) await fetch(`/api/channels/read/${currentChannelId}`, {method:'POST'});
     }
-    const uRes = await fetch('/api/unread');
-    const {count} = await uRes.json();
+    const {count} = await (await fetch('/api/unread')).json();
     updateFabBadge(count);
 }
-
-setInterval(async () => {
-    const uRes = await fetch('/api/unread');
-    const {count} = await uRes.json();
-    updateFabBadge(count);
-}, 20000);
-
+setInterval(async () => { const {count} = await (await fetch('/api/unread')).json(); updateFabBadge(count); }, 20000);
 function updateFabBadge(count) {
     const badge = document.getElementById('fab-badge');
     if (count > 0) { badge.style.display = 'flex'; badge.textContent = count > 99 ? '99+' : count; }
     else { badge.style.display = 'none'; }
 }
-
 function showToast(msg) {
     const t = document.createElement('div');
     t.style.cssText = 'position:fixed;top:1rem;left:50%;transform:translateX(-50%);background:#1e293b;border:1px solid #334155;color:#e2e8f0;padding:0.7rem 1.2rem;border-radius:12px;font-size:0.78rem;font-weight:600;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,0.4);max-width:90vw;text-align:center';
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(() => t.remove(), 4000);
+    t.textContent = msg; document.body.appendChild(t); setTimeout(() => t.remove(), 4000);
 }
-
 async function startDM() {
     const username = prompt('Enter operator username to DM:');
     if (!username) return;
-    const res = await fetch('/api/channels/dm', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({username})
-    });
+    const res = await fetch('/api/channels/dm', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({username}) });
     if (!res.ok) { showToast('User not found'); return; }
     const {channel_id, name} = await res.json();
-    await loadChannels();
-    openChannel(channel_id, name);
+    await loadChannels(); openChannel(channel_id, name);
 }
-
 async function sendAlert() {
     const body = prompt('Enter alert message to broadcast to all operators:');
     if (!body) return;
-    const res = await fetch('/api/channels/alert', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({body})
-    });
+    const res = await fetch('/api/channels/alert', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({body}) });
     if (res.ok) { showToast('Alert sent to all operators'); await loadMessages(); }
 }
-
 function handleMentionInput(input) {
     const val = input.value;
     const match = val.match(/@(\w*)$/);
@@ -1855,27 +1677,14 @@ function handleMentionInput(input) {
     ac.innerHTML = '';
     filtered.slice(0, 5).forEach(u => {
         const item = document.createElement('div');
-        item.className = 'autocomplete-item';
-        item.textContent = '@' + u.username;
-        item.onmousedown = (e) => {
-            e.preventDefault();
-            input.value = val.replace(/@\w*$/, '@' + u.username + ' ');
-            hideMentionAutocomplete();
-            input.focus();
-        };
+        item.className = 'autocomplete-item'; item.textContent = '@' + u.username;
+        item.onmousedown = (e) => { e.preventDefault(); input.value = val.replace(/@\w*$/, '@' + u.username + ' '); hideMentionAutocomplete(); input.focus(); };
         ac.appendChild(item);
     });
     ac.style.display = 'block';
 }
-
-function hideMentionAutocomplete() {
-    document.getElementById('mention-autocomplete').style.display = 'none';
-}
-
-document.addEventListener('click', (e) => {
-    if (!e.target.closest('.chat-input-area')) hideMentionAutocomplete();
-});
-
+function hideMentionAutocomplete() { document.getElementById('mention-autocomplete').style.display = 'none'; }
+document.addEventListener('click', (e) => { if (!e.target.closest('.chat-input-area')) hideMentionAutocomplete(); });
 window.addEventListener('load', () => {
     if (VAPID_PUBLIC_KEY) registerPushNotifications();
     fetch('/api/unread').then(r=>r.json()).then(({count}) => updateFabBadge(count));
@@ -1884,13 +1693,9 @@ window.addEventListener('load', () => {
 """
 
 EDIT_MODALS_HTML = """
-<!-- Edit Log Modal -->
 <div id="modal-log" class="modal-overlay">
   <div class="modal-box">
-    <div class="flex justify-between items-start mb-1">
-      <h2>Edit Log</h2>
-      <button class="modal-close" onclick="closeModal('modal-log')">&times;</button>
-    </div>
+    <div class="flex justify-between items-start mb-1"><h2>Edit Log</h2><button class="modal-close" onclick="closeModal('modal-log')">&times;</button></div>
     <p class="sub">Correct the telemetry record</p>
     <form id="edit-log-form" method="POST" enctype="multipart/form-data" class="space-y-4">
       <div class="grid grid-cols-2 gap-4">
@@ -1907,45 +1712,20 @@ EDIT_MODALS_HTML = """
         <div><label class="label-caps">Lng</label><input id="el-lng" name="lng" type="text" class="input-field"></div>
       </div>
       <div class="grid grid-cols-2 gap-4">
-        <div>
-          <span class="photo-label">Start Odo Photo</span>
-          <img id="el-p-start" src="" class="photo-preview">
-          <input name="start_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full">
-        </div>
-        <div>
-          <span class="photo-label">End Odo Photo</span>
-          <img id="el-p-end" src="" class="photo-preview">
-          <input name="end_mileage_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full">
-        </div>
-        <div>
-          <span class="photo-label">Shift In Photo</span>
-          <img id="el-p-sin" src="" class="photo-preview">
-          <input name="start_shift_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full">
-        </div>
-        <div>
-          <span class="photo-label">Shift Out Photo</span>
-          <img id="el-p-sout" src="" class="photo-preview">
-          <input name="end_shift_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full">
-        </div>
-        <div class="col-span-2">
-          <span class="photo-label">ETA Photo</span>
-          <img id="el-p-eta" src="" class="photo-preview">
-          <input name="eta_img" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full">
-        </div>
+        <div><span class="photo-label">Start Odo Photo</span><img id="el-p-start" src="" class="photo-preview"><input name="start_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full"></div>
+        <div><span class="photo-label">End Odo Photo</span><img id="el-p-end" src="" class="photo-preview"><input name="end_mileage_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full"></div>
+        <div><span class="photo-label">Shift In Photo</span><img id="el-p-sin" src="" class="photo-preview"><input name="start_shift_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full"></div>
+        <div><span class="photo-label">Shift Out Photo</span><img id="el-p-sout" src="" class="photo-preview"><input name="end_shift_photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full"></div>
+        <div class="col-span-2"><span class="photo-label">ETA Photo</span><img id="el-p-eta" src="" class="photo-preview"><input name="eta_img" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full"></div>
       </div>
       <p class="text-[10px] text-gray-500">Leave any photo blank to keep the existing one.</p>
       <button type="submit" class="btn-main w-full py-4 text-sm mt-2">Save Changes</button>
     </form>
   </div>
 </div>
-
-<!-- Edit Break Modal -->
 <div id="modal-break" class="modal-overlay">
   <div class="modal-box">
-    <div class="flex justify-between items-start mb-1">
-      <h2>Edit Break</h2>
-      <button class="modal-close" onclick="closeModal('modal-break')">&times;</button>
-    </div>
+    <div class="flex justify-between items-start mb-1"><h2>Edit Break</h2><button class="modal-close" onclick="closeModal('modal-break')">&times;</button></div>
     <p class="sub">Fix timestamp, location or photo</p>
     <form id="edit-break-form" method="POST" enctype="multipart/form-data" class="space-y-4">
       <div class="grid grid-cols-2 gap-4">
@@ -1956,24 +1736,15 @@ EDIT_MODALS_HTML = """
         <div><label class="label-caps">Lat</label><input id="eb-lat" name="lat" type="text" class="input-field"></div>
         <div><label class="label-caps">Lng</label><input id="eb-lng" name="lng" type="text" class="input-field"></div>
       </div>
-      <div>
-        <span class="photo-label">Photo</span>
-        <img id="eb-photo" src="" class="photo-preview">
-        <input name="photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full">
-      </div>
+      <div><span class="photo-label">Photo</span><img id="eb-photo" src="" class="photo-preview"><input name="photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full"></div>
       <p class="text-[10px] text-gray-500">Leave photo blank to keep the existing one.</p>
       <button type="submit" class="btn-main w-full py-4 text-sm mt-2">Save Changes</button>
     </form>
   </div>
 </div>
-
-<!-- Edit ETA Modal -->
 <div id="modal-eta" class="modal-overlay">
   <div class="modal-box">
-    <div class="flex justify-between items-start mb-1">
-      <h2>Edit ETA</h2>
-      <button class="modal-close" onclick="closeModal('modal-eta')">&times;</button>
-    </div>
+    <div class="flex justify-between items-start mb-1"><h2>Edit ETA</h2><button class="modal-close" onclick="closeModal('modal-eta')">&times;</button></div>
     <p class="sub">Fix timestamp, location or photo</p>
     <form id="edit-eta-form" method="POST" enctype="multipart/form-data" class="space-y-4">
       <div><label class="label-caps">Timestamp</label><input id="ee-ts" name="timestamp" type="datetime-local" class="input-field" required></div>
@@ -1981,27 +1752,15 @@ EDIT_MODALS_HTML = """
         <div><label class="label-caps">Lat</label><input id="ee-lat" name="lat" type="text" class="input-field"></div>
         <div><label class="label-caps">Lng</label><input id="ee-lng" name="lng" type="text" class="input-field"></div>
       </div>
-      <div>
-        <span class="photo-label">Photo</span>
-        <img id="ee-photo" src="" class="photo-preview">
-        <input name="photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full">
-      </div>
+      <div><span class="photo-label">Photo</span><img id="ee-photo" src="" class="photo-preview"><input name="photo" type="file" accept="image/*" class="text-xs text-gray-500 mt-1 block w-full"></div>
       <p class="text-[10px] text-gray-500">Leave photo blank to keep the existing one.</p>
       <button type="submit" class="btn-main w-full py-4 text-sm mt-2">Save Changes</button>
     </form>
   </div>
 </div>
-
 <script>
-function closeModal(id) {
-    document.getElementById(id).classList.remove('open');
-}
-document.querySelectorAll('.modal-overlay').forEach(el => {
-    el.addEventListener('click', function(e) {
-        if (e.target === this) closeModal(this.id);
-    });
-});
-
+function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+document.querySelectorAll('.modal-overlay').forEach(el => { el.addEventListener('click', function(e) { if (e.target === this) closeModal(this.id); }); });
 function openEditLog(logId, startMi, endMi, sinT, soutT, notes, lat, lng, pStart, pEnd, pSin, pSout, pEta) {
     const form = document.getElementById('edit-log-form');
     form.action = '/edit_log/' + logId;
@@ -2019,7 +1778,6 @@ function openEditLog(logId, startMi, endMi, sinT, soutT, notes, lat, lng, pStart
     document.getElementById('el-p-eta').src = pEta;
     document.getElementById('modal-log').classList.add('open');
 }
-
 function openEditBreak(id, action, timestamp, lat, lng, photo) {
     document.getElementById('edit-break-form').action = '/edit_break/' + id;
     document.getElementById('eb-action').value = action;
@@ -2029,7 +1787,6 @@ function openEditBreak(id, action, timestamp, lat, lng, photo) {
     document.getElementById('eb-photo').src = photo;
     document.getElementById('modal-break').classList.add('open');
 }
-
 function openEditEta(id, timestamp, lat, lng, photo) {
     document.getElementById('edit-eta-form').action = '/edit_eta/' + id;
     document.getElementById('ee-ts').value = timestamp;
@@ -2045,7 +1802,7 @@ LOGIN_HTML = f"<html>{COMMON_HEAD}<body class='flex items-center justify-center 
 
 ADMIN_HTML = f"<html>{COMMON_HEAD}<body>" + NAV_BAR + DRAWER_HTML + """
 <main class="max-w-7xl mx-auto px-6 pb-24">
-    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-12">
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
         <div class="glass-panel p-8 rounded-[2rem] relative overflow-hidden group">
             <div class="absolute top-0 right-0 p-4 opacity-10 group-hover:opacity-20 transition"><svg class="w-16 h-16" fill="currentColor" viewBox="0 0 20 20"><path d="M13 6a3 3 0 11-6 0 3 3 0 016 0zM18 8a2 2 0 11-4 0 2 2 0 014 0zM14 15a4 4 0 00-8 0v3h8v-3zM6 8a2 2 0 11-4 0 2 2 0 014 0zM16 18v-3a5.972 5.972 0 00-.75-2.906A3.005 3.005 0 0119 15v3h-3zM4.75 12.094A5.973 5.973 0 004 15v3H1v-3a3 3 0 013.75-2.906z"></path></svg></div>
             <p class="label-caps text-amber-400">Total Operators</p>
@@ -2061,6 +1818,31 @@ ADMIN_HTML = f"<html>{COMMON_HEAD}<body>" + NAV_BAR + DRAWER_HTML + """
             <p class="label-caps text-amber-400">Reports Filed</p>
             <h3 class="text-5xl font-black text-white italic mt-2">{{ log_count }}</h3>
         </div>
+    </div>
+
+    <div class="glass-panel rounded-[1.5rem] p-4 mb-8 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-6">
+            <a href="/live_map" class="live-map-btn">
+                <span class="pulse-dot"></span>
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"></path></svg>
+                Live Map
+                {% if live_alerts_count > 0 %}
+                <span class="alert-badge">{{ live_alerts_count }} ALERT{{ 's' if live_alerts_count > 1 else '' }}</span>
+                {% endif %}
+            </a>
+            <div class="hidden md:flex items-center gap-4">
+                {% if live_ops %}{% for op in live_ops %}
+                <div class="flex items-center gap-2">
+                    <div class="w-2 h-2 rounded-full {{ 'bg-green-400' if op.status == 'Active' else 'bg-amber-400' if op.status == 'Break' else 'bg-red-400' }}"></div>
+                    <span class="text-xs font-bold text-gray-300">{{ op.username }}</span>
+                    <span class="text-[10px] text-gray-600 font-mono">{{ op.status }}</span>
+                </div>
+                {% endfor %}{% else %}
+                <span class="text-xs text-gray-600 font-bold uppercase tracking-wider">No operators online</span>
+                {% endif %}
+            </div>
+        </div>
+        <div class="text-[10px] font-mono text-gray-600 hidden md:block">{{ live_ops|length }} ONLINE · AUTO-REFRESH 30s</div>
     </div>
 
     <div class="flex flex-col lg:flex-row gap-10">
@@ -2124,71 +1906,34 @@ ADMIN_HTML = f"<html>{COMMON_HEAD}<body>" + NAV_BAR + DRAWER_HTML + """
                         </div>
                     </button>
                     <div class="hidden p-8 bg-black/40 border-t border-white/5 space-y-6">
-
                         {% for log in logs %}
-                        {% set ts_local = log.submitted_at.replace(' ', 'T')[:16] %}
                         <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl transmission-card">
                             <div class="card-actions">
-                                <button type="button" class="act-btn act-btn-edit"
-                                  onclick="openEditLog({{ log.id }}, '{{ log.start_mileage }}', '{{ log.end_mileage }}', '{{ log.start_shift_time or '' }}', '{{ log.end_shift_time or '' }}', '{{ log.notes or '' }}', '{{ log.lat or '' }}', '{{ log.lng or '' }}', '{{ resolve_image_url(log.start_photo) }}', '{{ resolve_image_url(log.end_mileage_photo) }}', '{{ resolve_image_url(log.start_shift_photo) }}', '{{ resolve_image_url(log.end_shift_photo) }}', '{{ resolve_image_url(log.eta_img) }}')">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                    Edit
+                                <button type="button" class="act-btn act-btn-edit" onclick="openEditLog({{ log.id }}, '{{ log.start_mileage }}', '{{ log.end_mileage }}', '{{ log.start_shift_time or '' }}', '{{ log.end_shift_time or '' }}', '{{ log.notes or '' }}', '{{ log.lat or '' }}', '{{ log.lng or '' }}', '{{ resolve_image_url(log.start_photo) }}', '{{ resolve_image_url(log.end_mileage_photo) }}', '{{ resolve_image_url(log.start_shift_photo) }}', '{{ resolve_image_url(log.end_shift_photo) }}', '{{ resolve_image_url(log.eta_img) }}')">
+                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>Edit
                                 </button>
-                                <form action="/delete_log/{{ log.id }}" method="POST" onsubmit="return confirm('Delete this log record?');">
-                                    <button type="submit" class="act-btn act-btn-delete">
-                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                        Delete
-                                    </button>
-                                </form>
+                                <form action="/delete_log/{{ log.id }}" method="POST" onsubmit="return confirm('Delete this log record?');"><button type="submit" class="act-btn act-btn-delete"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button></form>
                             </div>
                             <div class="flex items-center gap-3 mb-6">
-                                <div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center">
-                                    <svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 20 20"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg>
-                                </div>
-                                <div>
-                                    <p class="label-caps !mb-0 text-amber-400">Daily Telemetry</p>
-                                    <p class="text-[10px] text-gray-500 font-mono">{{ log.submitted_at }}</p>
-                                </div>
-                                {% if log.lat %}
-                                <p class="ml-auto text-[9px] text-amber-400/40 font-mono">{{ log.lat }}, {{ log.lng }}</p>
-                                {% endif %}
+                                <div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center"><svg class="w-4 h-4 text-amber-400" fill="currentColor" viewBox="0 0 20 20"><path d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z"/></svg></div>
+                                <div><p class="label-caps !mb-0 text-amber-400">Daily Telemetry</p><p class="text-[10px] text-gray-500 font-mono">{{ log.submitted_at }}</p></div>
+                                {% if log.lat %}<p class="ml-auto text-[9px] text-amber-400/40 font-mono">{{ log.lat }}, {{ log.lng }}</p>{% endif %}
                             </div>
                             <div class="flex flex-wrap gap-8 mb-6 pb-6 border-b border-white/5">
-                                <div>
-                                    <p class="label-caps">Odometer Start</p>
-                                    <p class="text-3xl font-mono font-bold text-white tracking-tighter">{{ log.start_mileage }}</p>
-                                </div>
-                                <div>
-                                    <p class="label-caps">Odometer End</p>
-                                    <p class="text-3xl font-mono font-bold text-white tracking-tighter">{{ log.end_mileage }}</p>
-                                </div>
-                                <div class="border-l border-white/10 pl-8">
-                                    <p class="label-caps text-amber-400">Net Distance</p>
-                                    <p class="text-4xl font-black text-amber-400 italic tracking-tighter">{{ log.end_mileage - log.start_mileage }} <span class="text-sm">MI</span></p>
-                                </div>
+                                <div><p class="label-caps">Odometer Start</p><p class="text-3xl font-mono font-bold text-white tracking-tighter">{{ log.start_mileage }}</p></div>
+                                <div><p class="label-caps">Odometer End</p><p class="text-3xl font-mono font-bold text-white tracking-tighter">{{ log.end_mileage }}</p></div>
+                                <div class="border-l border-white/10 pl-8"><p class="label-caps text-amber-400">Net Distance</p><p class="text-4xl font-black text-amber-400 italic tracking-tighter">{{ log.end_mileage - log.start_mileage }} <span class="text-sm">MI</span></p></div>
                             </div>
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
-                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5">
-                                    <p class="label-caps !mb-1">Shift In</p>
-                                    <p class="text-lg font-black text-white italic">{{ log.start_shift_time }}</p>
-                                </div>
-                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5">
-                                    <p class="label-caps !mb-1">Shift Out</p>
-                                    <p class="text-lg font-black text-white italic">{{ log.end_shift_time }}</p>
-                                </div>
-                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5">
-                                    <p class="label-caps !mb-1">Notes</p>
-                                    <p class="text-sm font-bold text-gray-300 leading-snug">{{ log.notes }}</p>
-                                </div>
+                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5"><p class="label-caps !mb-1">Shift In</p><p class="text-lg font-black text-white italic">{{ log.start_shift_time }}</p></div>
+                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5"><p class="label-caps !mb-1">Shift Out</p><p class="text-lg font-black text-white italic">{{ log.end_shift_time }}</p></div>
+                                <div class="bg-black/40 p-4 rounded-2xl border border-white/5"><p class="label-caps !mb-1">Notes</p><p class="text-sm font-bold text-gray-300 leading-snug">{{ log.notes }}</p></div>
                             </div>
                             <p class="label-caps mb-3">Visuals <span class="text-gray-600">(click to open)</span></p>
                             <div class="flex gap-3 overflow-x-auto py-1">
                                 {% set labels = ['Start Odo', 'Shift In', 'Shift Out', 'End Odo', 'ETA Proof'] %}
                                 {% for img in [log.start_photo, log.start_shift_photo, log.end_shift_photo, log.end_mileage_photo, log.eta_img] %}
-                                <div class="relative group flex-shrink-0">
-                                    <img src="{{ resolve_image_url(img) }}" class="h-28 w-28 object-cover rounded-2xl border-2 border-white/5 group-hover:border-amber-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
-                                    <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-white text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">{{ labels[loop.index0] }}</span>
-                                </div>
+                                <div class="relative group flex-shrink-0"><img src="{{ resolve_image_url(img) }}" class="h-28 w-28 object-cover rounded-2xl border-2 border-white/5 group-hover:border-amber-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)"><span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-white text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">{{ labels[loop.index0] }}</span></div>
                                 {% endfor %}
                             </div>
                         </div>
@@ -2196,18 +1941,8 @@ ADMIN_HTML = f"<html>{COMMON_HEAD}<body>" + NAV_BAR + DRAWER_HTML + """
 
                         {% for ad in address_items %}
                         <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl">
-                            <div class="flex items-center gap-3 mb-5">
-                                <div class="w-8 h-8 bg-blue-500/10 rounded-lg flex items-center justify-center">
-                                    <svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-                                </div>
-                                <div>
-                                    <p class="label-caps !mb-0 text-blue-400">Assigned Address</p>
-                                    <p class="text-[10px] text-gray-500 font-mono">{{ ad.timestamp }}</p>
-                                </div>
-                            </div>
-                            <div class="bg-black/40 p-5 rounded-2xl border border-white/5">
-                                <p class="text-white font-bold leading-relaxed">{{ ad.address_text }}</p>
-                            </div>
+                            <div class="flex items-center gap-3 mb-5"><div class="w-8 h-8 bg-blue-500/10 rounded-lg flex items-center justify-center"><svg class="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg></div><div><p class="label-caps !mb-0 text-blue-400">Assigned Address</p><p class="text-[10px] text-gray-500 font-mono">{{ ad.timestamp }}</p></div></div>
+                            <div class="bg-black/40 p-5 rounded-2xl border border-white/5"><p class="text-white font-bold leading-relaxed">{{ ad.address_text }}</p></div>
                         </div>
                         {% endfor %}
 
@@ -2215,133 +1950,43 @@ ADMIN_HTML = f"<html>{COMMON_HEAD}<body>" + NAV_BAR + DRAWER_HTML + """
                         {% set et_ts = et.timestamp.replace(' ', 'T')[:16] %}
                         <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl transmission-card">
                             <div class="card-actions">
-                                <button type="button" class="act-btn act-btn-edit"
-                                    onclick="openEditEta({{ et.id }}, '{{ et_ts }}', '{{ et.lat or "" }}', '{{ et.lng or "" }}', '{{ resolve_image_url(et.photo) }}')">
-                                    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                    Edit
-                                </button>
-                                <form action="/delete_eta/{{ et.id }}" method="POST" onsubmit="return confirm('Delete this ETA record?');">
-                                    <button type="submit" class="act-btn act-btn-delete">
-                                        <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                        Delete
-                                    </button>
-                                </form>
+                                <button type="button" class="act-btn act-btn-edit" onclick="openEditEta({{ et.id }}, '{{ et_ts }}', '{{ et.lat or "" }}', '{{ et.lng or "" }}', '{{ resolve_image_url(et.photo) }}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>Edit</button>
+                                <form action="/delete_eta/{{ et.id }}" method="POST" onsubmit="return confirm('Delete this ETA record?');"><button type="submit" class="act-btn act-btn-delete"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button></form>
                             </div>
-                            <div class="flex items-center gap-3 mb-5">
-                                <div class="w-8 h-8 bg-green-500/10 rounded-lg flex items-center justify-center">
-                                    <svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
-                                </div>
-                                <div>
-                                    <p class="label-caps !mb-0 text-green-400">ETA Confirmation</p>
-                                    <p class="text-[10px] text-gray-500 font-mono">{{ et.timestamp }}</p>
-                                </div>
-                                {% if et.lat %}
-                                <p class="ml-auto text-[9px] text-green-400/40 font-mono">{{ et.lat }}, {{ et.lng }}</p>
-                                {% endif %}
-                            </div>
-                            <div class="flex gap-3">
-                                <div class="relative group flex-shrink-0">
-                                    <img src="{{ resolve_image_url(et.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-white/5 group-hover:border-green-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
-                                    <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-green-300 text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">ETA Proof</span>
-                                </div>
-                                {% if et.lat %}
-                                <div class="flex flex-col justify-center">
-                                    <div class="bg-black/40 px-4 py-3 rounded-xl border border-white/5">
-                                        <p class="label-caps !mb-0">Location</p>
-                                        <p class="text-xs font-mono text-gray-300">{{ et.lat }}, {{ et.lng }}</p>
-                                    </div>
-                                </div>
-                                {% endif %}
-                            </div>
+                            <div class="flex items-center gap-3 mb-5"><div class="w-8 h-8 bg-green-500/10 rounded-lg flex items-center justify-center"><svg class="w-4 h-4 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg></div><div><p class="label-caps !mb-0 text-green-400">ETA Confirmation</p><p class="text-[10px] text-gray-500 font-mono">{{ et.timestamp }}</p></div>{% if et.lat %}<p class="ml-auto text-[9px] text-green-400/40 font-mono">{{ et.lat }}, {{ et.lng }}</p>{% endif %}</div>
+                            <div class="flex gap-3"><div class="relative group flex-shrink-0"><img src="{{ resolve_image_url(et.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-white/5 group-hover:border-green-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)"><span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-green-300 text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">ETA Proof</span></div>{% if et.lat %}<div class="flex flex-col justify-center"><div class="bg-black/40 px-4 py-3 rounded-xl border border-white/5"><p class="label-caps !mb-0">Location</p><p class="text-xs font-mono text-gray-300">{{ et.lat }}, {{ et.lng }}</p></div></div>{% endif %}</div>
                         </div>
                         {% endfor %}
 
-                        {% set break_starts = [] %}
-                        {% set break_ends = [] %}
-                        {% for br in break_items %}
-                            {% if br.action == 'Start' %}{% set _ = break_starts.append(br) %}{% endif %}
-                            {% if br.action == 'End' %}{% set _ = break_ends.append(br) %}{% endif %}
-                        {% endfor %}
-
+                        {% set break_starts = [] %}{% set break_ends = [] %}
+                        {% for br in break_items %}{% if br.action == 'Start' %}{% set _ = break_starts.append(br) %}{% endif %}{% if br.action == 'End' %}{% set _ = break_ends.append(br) %}{% endif %}{% endfor %}
                         {% if break_items|length %}
                         <div class="bg-[#1c2537] rounded-3xl p-8 border border-white/10 shadow-2xl">
-                            <div class="flex items-center gap-3 mb-6">
-                                <div class="w-8 h-8 bg-orange-500/10 rounded-lg flex items-center justify-center">
-                                    <svg class="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-                                </div>
-                                <p class="label-caps !mb-0 text-orange-400">Break Record</p>
-                            </div>
+                            <div class="flex items-center gap-3 mb-6"><div class="w-8 h-8 bg-orange-500/10 rounded-lg flex items-center justify-center"><svg class="w-4 h-4 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg></div><p class="label-caps !mb-0 text-orange-400">Break Record</p></div>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                {% if break_starts %}
-                                {% set bs = break_starts[0] %}
-                                {% set bs_ts = bs.timestamp.replace(' ', 'T')[:16] %}
+                                {% if break_starts %}{% set bs = break_starts[0] %}{% set bs_ts = bs.timestamp.replace(' ', 'T')[:16] %}
                                 <div class="space-y-3 transmission-card">
-                                    <div class="card-actions">
-                                        <button type="button" class="act-btn act-btn-edit"
-                                            onclick="openEditBreak({{ bs.id }}, '{{ bs.action }}', '{{ bs_ts }}', '{{ bs.lat or "" }}', '{{ bs.lng or "" }}', '{{ resolve_image_url(bs.photo) }}')">
-                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                            Edit
-                                        </button>
-                                        <form action="/delete_break/{{ bs.id }}" method="POST" onsubmit="return confirm('Delete this break start record?');">
-                                            <button type="submit" class="act-btn act-btn-delete">
-                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                                Delete
-                                            </button>
-                                        </form>
-                                    </div>
-                                    <p class="label-caps text-orange-400">Break Start</p>
-                                    <p class="text-[10px] text-gray-500 font-mono">{{ bs.timestamp }}</p>
-                                    {% if bs.lat %}<p class="text-[10px] text-orange-400/50 font-mono">{{ bs.lat }}, {{ bs.lng }}</p>{% endif %}
-                                    <div class="relative group inline-block">
-                                        <img src="{{ resolve_image_url(bs.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-orange-400/20 group-hover:border-orange-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
-                                        <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-orange-300 text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">Break Start</span>
-                                    </div>
-                                </div>
-                                {% endif %}
-
-                                {% if break_ends %}
-                                {% set be = break_ends[0] %}
-                                {% set be_ts = be.timestamp.replace(' ', 'T')[:16] %}
+                                    <div class="card-actions"><button type="button" class="act-btn act-btn-edit" onclick="openEditBreak({{ bs.id }}, '{{ bs.action }}', '{{ bs_ts }}', '{{ bs.lat or "" }}', '{{ bs.lng or "" }}', '{{ resolve_image_url(bs.photo) }}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>Edit</button><form action="/delete_break/{{ bs.id }}" method="POST" onsubmit="return confirm('Delete this break start record?');"><button type="submit" class="act-btn act-btn-delete"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button></form></div>
+                                    <p class="label-caps text-orange-400">Break Start</p><p class="text-[10px] text-gray-500 font-mono">{{ bs.timestamp }}</p>{% if bs.lat %}<p class="text-[10px] text-orange-400/50 font-mono">{{ bs.lat }}, {{ bs.lng }}</p>{% endif %}
+                                    <div class="relative group inline-block"><img src="{{ resolve_image_url(bs.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-orange-400/20 group-hover:border-orange-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)"><span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-orange-300 text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">Break Start</span></div>
+                                </div>{% endif %}
+                                {% if break_ends %}{% set be = break_ends[0] %}{% set be_ts = be.timestamp.replace(' ', 'T')[:16] %}
                                 <div class="space-y-3 transmission-card">
-                                    <div class="card-actions">
-                                        <button type="button" class="act-btn act-btn-edit"
-                                            onclick="openEditBreak({{ be.id }}, '{{ be.action }}', '{{ be_ts }}', '{{ be.lat or "" }}', '{{ be.lng or "" }}', '{{ resolve_image_url(be.photo) }}')">
-                                            <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-                                            Edit
-                                        </button>
-                                        <form action="/delete_break/{{ be.id }}" method="POST" onsubmit="return confirm('Delete this break end record?');">
-                                            <button type="submit" class="act-btn act-btn-delete">
-                                                <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
-                                                Delete
-                                            </button>
-                                        </form>
-                                    </div>
-                                    <p class="label-caps text-gray-400">Break End</p>
-                                    <p class="text-[10px] text-gray-500 font-mono">{{ be.timestamp }}</p>
-                                    {% if be.lat %}<p class="text-[10px] text-gray-400/50 font-mono">{{ be.lat }}, {{ be.lng }}</p>{% endif %}
-                                    <div class="relative group inline-block">
-                                        <img src="{{ resolve_image_url(be.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-white/5 group-hover:border-amber-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)">
-                                        <span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-white text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">Break End</span>
-                                    </div>
+                                    <div class="card-actions"><button type="button" class="act-btn act-btn-edit" onclick="openEditBreak({{ be.id }}, '{{ be.action }}', '{{ be_ts }}', '{{ be.lat or "" }}', '{{ be.lng or "" }}', '{{ resolve_image_url(be.photo) }}')"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>Edit</button><form action="/delete_break/{{ be.id }}" method="POST" onsubmit="return confirm('Delete this break end record?');"><button type="submit" class="act-btn act-btn-delete"><svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>Delete</button></form></div>
+                                    <p class="label-caps text-gray-400">Break End</p><p class="text-[10px] text-gray-500 font-mono">{{ be.timestamp }}</p>{% if be.lat %}<p class="text-[10px] text-gray-400/50 font-mono">{{ be.lat }}, {{ be.lng }}</p>{% endif %}
+                                    <div class="relative group inline-block"><img src="{{ resolve_image_url(be.photo) }}" class="h-36 w-36 object-cover rounded-2xl border-2 border-white/5 group-hover:border-amber-400 transition cursor-pointer shadow-lg" onclick="window.open(this.src)"><span class="absolute bottom-1 left-1 right-1 bg-black/70 text-[8px] font-black text-white text-center py-1 rounded-md opacity-0 group-hover:opacity-100 transition uppercase">Break End</span></div>
                                 </div>
-                                {% else %}
-                                <div class="flex items-center justify-center h-36 rounded-2xl border-2 border-dashed border-white/10">
-                                    <p class="text-xs text-gray-600 font-bold uppercase">Break still active</p>
-                                </div>
-                                {% endif %}
+                                {% else %}<div class="flex items-center justify-center h-36 rounded-2xl border-2 border-dashed border-white/10"><p class="text-xs text-gray-600 font-bold uppercase">Break still active</p></div>{% endif %}
                             </div>
                         </div>
                         {% endif %}
-
                     </div>
                 </div>
                 {% endfor %}
             </div>
             {% endfor %}
             <div id="empty-state" class="glass-panel p-32 rounded-[4rem] text-center border-dashed border-4 border-white/5">
-                <div class="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <svg class="w-12 h-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-width="2"></path></svg>
-                </div>
+                <div class="w-24 h-24 bg-white/5 rounded-full flex items-center justify-center mx-auto mb-6"><svg class="w-12 h-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" stroke-width="2"></path></svg></div>
                 <h2 class="text-2xl font-black text-gray-600 uppercase italic tracking-widest">Awaiting Identity Selection</h2>
                 <p class="text-gray-500 mt-2 font-bold uppercase text-[10px] tracking-[3px]">Select personnel from sidebar to decrypt logs</p>
             </div>
@@ -2367,206 +2012,595 @@ function filterSidebar() {
 """ + EDIT_MODALS_HTML + CHAT_HTML + """
 </body></html>"""
 
+# ─── OP HTML ────────────────────────────────────────────────
 OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + """
 <main class="px-6 max-w-4xl mx-auto">
     {% if assigned_address %}
     <div class="glass-panel p-5 rounded-2xl mb-6 border border-white/10">
-        <div class="flex justify-between items-center">
-            <p class="text-xs font-black uppercase tracking-widest">1st Address</p>
-        </div>
-        <div class="mt-3 text-sm text-gray-300">{{ assigned_address.address_text }}</div>
-        <div class="mt-4">
-            <button type="button" onclick="triggerETA()" class="btn-main px-5 py-3 text-xs tracking-widest">ETA</button>
-        </div>
+        <div class="flex justify-between items-center mb-4"><p class="text-xs font-black uppercase tracking-widest">1st Address</p></div>
+        <div class="text-sm text-gray-300 mb-4">{{ assigned_address.address_text }}</div>
+        <form action="/submit_eta" method="POST" enctype="multipart/form-data" class="space-y-4" id="etaForm">
+            <input type="hidden" name="lat" id="etaLat">
+            <input type="hidden" name="lng" id="etaLng">
+            <div class="relative">
+                <input type="file" name="photo" accept="image/*" id="etaPhotoInput" class="hidden" required>
+                <label for="etaPhotoInput" class="flex items-center justify-center gap-2 bg-white/5 p-5 rounded-xl border border-white/10 hover:border-amber-400/30 hover:bg-white/8 cursor-pointer transition-all group">
+                    <svg class="w-5 h-5 text-gray-500 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg>
+                    <span class="text-xs text-gray-400 group-hover:text-white transition">Add photo</span>
+                </label>
+            </div>
+            <button type="submit" class="btn-main w-full py-3 text-xs font-black">Submit</button>
+        </form>
     </div>
     {% endif %}
-    <div class="flex justify-end items-center gap-3 mb-6">
-        {% if in_break %}
-        <button type="button" onclick="triggerBreak('End')" class="btn-main px-5 py-3 text-xs tracking-widest bg-red-500 text-white hover:bg-red-400">End Break</button>
-        {% else %}
-        <button type="button" onclick="triggerBreak('Start')" class="btn-main px-5 py-3 text-xs tracking-widest">Start Break</button>
-        {% endif %}
-    </div>
     <div class="glass-panel p-5 rounded-2xl mb-8 border border-white/10">
-        <div class="flex justify-between items-center">
-            <p class="text-xs font-black uppercase tracking-widest">Break Status</p>
-            <span class="text-xs font-bold text-amber-300">{{ 'ON BREAK' if in_break else 'OFF BREAK' }}</span>
-        </div>
-        <div class="mt-3 text-xs text-gray-300">Latest break action: {{ break_records[0].action if break_records else 'None yet' }} at {{ break_records[0].timestamp if break_records else 'N/A' }}</div>
-        <div class="mt-4 max-h-40 overflow-y-auto">
+        <div class="flex justify-between items-center mb-4"><p class="text-xs font-black uppercase tracking-widest">Break Status</p><span class="text-xs font-bold text-amber-300">{{ 'ON BREAK' if in_break else 'OFF BREAK' }}</span></div>
+        <div class="text-xs text-gray-300 mb-4">Latest break action: {{ break_records[0].action if break_records else 'None yet' }} at {{ break_records[0].timestamp if break_records else 'N/A' }}</div>
+        <div class="max-h-40 overflow-y-auto mb-4">
             {% if break_records %}
             <table class="w-full text-xs border border-white/10 rounded-xl">
-                <thead class="bg-white/5">
-                    <tr><th class="px-2 py-1 text-left">Time</th><th class="px-2 py-1 text-left">Action</th><th class="px-2 py-1 text-left">Geo</th></tr>
-                </thead>
-                <tbody>
-                    {% for br in break_records[:8] %}
-                    <tr class="border-t border-white/10">
-                        <td class="px-2 py-1">{{ br.timestamp }}</td>
-                        <td class="px-2 py-1">{{ br.action }}</td>
-                        <td class="px-2 py-1">{{ br.lat or 'N/A' }}, {{ br.lng or 'N/A' }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
+                <thead class="bg-white/5"><tr><th class="px-2 py-1 text-left">Time</th><th class="px-2 py-1 text-left">Action</th><th class="px-2 py-1 text-left">Geo</th></tr></thead>
+                <tbody>{% for br in break_records[:8] %}<tr class="border-t border-white/10"><td class="px-2 py-1">{{ br.timestamp }}</td><td class="px-2 py-1">{{ br.action }}</td><td class="px-2 py-1">{{ br.lat or 'N/A' }}, {{ br.lng or 'N/A' }}</td></tr>{% endfor %}</tbody>
             </table>
-            {% else %}
-            <p class="text-[10px] text-gray-400 mt-2">No break records yet.</p>
-            {% endif %}
+            {% else %}<p class="text-[10px] text-gray-400 mt-2">No break records yet.</p>{% endif %}
         </div>
+        <form action="/break_action" method="POST" enctype="multipart/form-data" class="space-y-4" id="breakForm">
+            <input type="hidden" name="action" value="{% if in_break %}End{% else %}Start{% endif %}">
+            <input type="hidden" name="lat" id="breakLat">
+            <input type="hidden" name="lng" id="breakLng">
+            <div class="relative">
+                <input type="file" name="photo" accept="image/*" id="breakPhotoInput" class="hidden" required>
+                <label for="breakPhotoInput" class="flex items-center justify-center gap-2 bg-white/5 p-5 rounded-xl border border-white/10 hover:border-amber-400/30 hover:bg-white/8 cursor-pointer transition-all group">
+                    <svg class="w-5 h-5 text-gray-500 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg>
+                    <span class="text-xs text-gray-400 group-hover:text-white transition">Add photo</span>
+                </label>
+            </div>
+            <button type="submit" class="btn-main w-full py-3 text-xs font-black {% if in_break %}bg-red-500 text-white hover:bg-red-400{% endif %}">{% if in_break %}End Break{% else %}Start Break{% endif %}</button>
+        </form>
     </div>
-    <form id="breakForm" action="/break_action" method="POST" enctype="multipart/form-data" class="hidden">
-        <input type="hidden" id="breakAction" name="action" value="">
-        <input type="hidden" id="breakLat" name="lat" value="">
-        <input type="hidden" id="breakLng" name="lng" value="">
-        <input type="file" id="breakPhotoInput" name="photo" accept="image/*" capture="user" class="hidden" onchange="submitBreakForm()" required>
-    </form>
-    <form id="etaForm" action="/submit_eta" method="POST" enctype="multipart/form-data" class="hidden">
-        <input type="hidden" id="etaLat" name="lat" value="">
-        <input type="hidden" id="etaLng" name="lng" value="">
-        <input type="file" id="etaPhotoInput" name="photo" accept="image/*" capture="user" class="hidden" onchange="submitETAForm()" required>
-    </form>
     <div id="breakStatus" class="text-right text-xs font-bold text-amber-400 mb-4"></div>
-
-    <div class="mb-10">
-        <h2 class="text-4xl font-black text-white italic uppercase tracking-tighter">Daily <span class="text-amber-400">Telemetry</span></h2>
-        <p class="text-gray-500 font-bold uppercase text-[10px] tracking-[2px] mt-2">Field Report Submission Module</p>
-    </div>
-    <form method="POST" action="/submit" enctype="multipart/form-data" class="glass-panel p-10 rounded-[3rem] space-y-10 shadow-2xl">
+    <div class="mb-10"><h2 class="text-4xl font-black text-white italic uppercase tracking-tighter">Daily <span class="text-amber-400">Telemetry</span></h2><p class="text-gray-500 font-bold uppercase text-[10px] tracking-[2px] mt-2">Field Report Submission Module</p></div>
+    <form method="POST" action="/submit" enctype="multipart/form-data" class="glass-panel p-10 rounded-[3rem] space-y-10 shadow-2xl" id="telemetryForm">
         <input type="hidden" name="lat" id="lat">
         <input type="hidden" name="lng" id="lng">
         <div class="grid grid-cols-1 md:grid-cols-2 gap-12">
             <div class="space-y-6">
-                <div class="flex items-center gap-3 mb-2">
-                    <div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center text-amber-400 font-black italic">M</div>
-                    <p class="label-caps !mb-0">Odometer Data</p>
-                </div>
+                <div class="flex items-center gap-3 mb-2"><div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center text-amber-400 font-black italic">M</div><p class="label-caps !mb-0">Odometer Data</p></div>
                 <div class="space-y-4">
-                    <div>
-                        <label class="label-caps !text-[9px] opacity-50">Start Value</label>
-                        <input type="number" name="start_mileage" class="input-field" placeholder="000000" required>
-                        <input type="file" name="start_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    <div><label class="label-caps !text-[9px] opacity-50">Start Value</label><input type="number" name="start_mileage" class="input-field" placeholder="000000" required>
+                    <div class="relative mt-3">
+                        <input type="file" name="start_photo" accept="image/*" id="startPhotoInput" class="hidden" required>
+                        <label for="startPhotoInput" class="flex items-center justify-center gap-2 bg-white/5 p-4 rounded-xl border border-white/10 hover:border-amber-400/30 hover:bg-white/8 cursor-pointer transition-all group">
+                            <svg class="w-5 h-5 text-gray-500 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg>
+                            <span class="text-xs text-gray-400 group-hover:text-white transition">Add photo</span>
+                        </label>
                     </div>
-                    <div class="pt-4">
-                        <label class="label-caps !text-[9px] opacity-50">End Value</label>
-                        <input type="number" name="end_mileage" class="input-field" placeholder="000000" required>
-                        <input type="file" name="end_mileage_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    </div>
+                    <div class="pt-4"><label class="label-caps !text-[9px] opacity-50">End Value</label><input type="number" name="end_mileage" class="input-field" placeholder="000000" required>
+                    <div class="relative mt-3">
+                        <input type="file" name="end_mileage_photo" accept="image/*" id="endMileagePhotoInput" class="hidden" required>
+                        <label for="endMileagePhotoInput" class="flex items-center justify-center gap-2 bg-white/5 p-4 rounded-xl border border-white/10 hover:border-amber-400/30 hover:bg-white/8 cursor-pointer transition-all group">
+                            <svg class="w-5 h-5 text-gray-500 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg>
+                            <span class="text-xs text-gray-400 group-hover:text-white transition">Add photo</span>
+                        </label>
+                    </div>
                     </div>
                 </div>
             </div>
             <div class="space-y-6">
-                <div class="flex items-center gap-3 mb-2">
-                    <div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center text-amber-400 font-black italic">T</div>
-                    <p class="label-caps !mb-0">Timekeeping</p>
-                </div>
+                <div class="flex items-center gap-3 mb-2"><div class="w-8 h-8 bg-amber-400/10 rounded-lg flex items-center justify-center text-amber-400 font-black italic">T</div><p class="label-caps !mb-0">Timekeeping</p></div>
                 <div class="space-y-4">
-                    <div>
-                        <label class="label-caps !text-[9px] opacity-50">Shift Initiation</label>
-                        <input type="time" name="start_shift_time" class="input-field" required>
-                        <input type="file" name="start_shift_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    <div><label class="label-caps !text-[9px] opacity-50">Shift Initiation</label><input type="time" name="start_shift_time" class="input-field" required>
+                    <div class="relative mt-3">
+                        <input type="file" name="start_shift_photo" accept="image/*" id="startShiftPhotoInput" class="hidden" required>
+                        <label for="startShiftPhotoInput" class="flex items-center justify-center gap-2 bg-white/5 p-4 rounded-xl border border-white/10 hover:border-amber-400/30 hover:bg-white/8 cursor-pointer transition-all group">
+                            <svg class="w-5 h-5 text-gray-500 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg>
+                            <span class="text-xs text-gray-400 group-hover:text-white transition">Add photo</span>
+                        </label>
                     </div>
-                    <div class="pt-4">
-                        <label class="label-caps !text-[9px] opacity-50">Shift Termination</label>
-                        <input type="time" name="end_shift_time" class="input-field" required>
-                        <input type="file" name="end_shift_photo" accept="image/*" class="text-[10px] mt-3 block text-gray-500 font-bold" required>
+                    </div>
+                    <div class="pt-4"><label class="label-caps !text-[9px] opacity-50">Shift Termination</label><input type="time" name="end_shift_time" class="input-field" required>
+                    <div class="relative mt-3">
+                        <input type="file" name="end_shift_photo" accept="image/*" id="endShiftPhotoInput" class="hidden" required>
+                        <label for="endShiftPhotoInput" class="flex items-center justify-center gap-2 bg-white/5 p-4 rounded-xl border border-white/10 hover:border-amber-400/30 hover:bg-white/8 cursor-pointer transition-all group">
+                            <svg class="w-5 h-5 text-gray-500 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg>
+                            <span class="text-xs text-gray-400 group-hover:text-white transition">Add photo</span>
+                        </label>
+                    </div>
                     </div>
                 </div>
             </div>
         </div>
-        <div class="flex items-center gap-4 bg-black/30 p-4 rounded-2xl border border-white/5">
-            <p class="label-caps !mb-0 flex-grow">Visual Confirmation (ETA/Proof)</p>
-            <input type="file" name="eta_img" accept="image/*" class="text-[10px] text-gray-500 font-bold" required>
+        <div class="relative">
+            <input type="file" name="eta_img" accept="image/*" id="etaImgInput" class="hidden" required>
+            <label for="etaImgInput" class="flex items-center justify-center gap-2 bg-white/5 p-5 rounded-xl border border-white/10 hover:border-amber-400/30 hover:bg-white/8 cursor-pointer transition-all group">
+                <svg class="w-5 h-5 text-gray-500 group-hover:text-amber-400 transition" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg>
+                <span class="text-xs text-gray-400 group-hover:text-white transition">Add visual confirmation</span>
+            </label>
         </div>
-        <button type="submit" class="btn-main w-full py-6 text-2xl shadow-2xl shadow-amber-400/20">Finalize & Transmit Data</button>
+        <button type="submit" class="btn-main w-full py-4 text-lg font-black">Submit</button>
     </form>
 </main>
 <script>
+    // ── Geolocation for main form ──────────────────────────────────────────
     navigator.geolocation.getCurrentPosition(
         p => { document.getElementById('lat').value = p.coords.latitude; document.getElementById('lng').value = p.coords.longitude; },
         e => console.log("GPS unavailable")
     );
 
-    function triggerBreak(action) {
-        const status = document.getElementById('breakStatus');
-        status.textContent = `Preparing ${action.toLowerCase()} break image...`;
-        document.getElementById('breakAction').value = action;
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(pos => {
-                document.getElementById('breakLat').value = pos.coords.latitude;
-                document.getElementById('breakLng').value = pos.coords.longitude;
-                status.textContent = `${action} break location captured.`;
-                document.getElementById('breakPhotoInput').click();
+    // ── File selection indicators ─────────────────────────────────────────
+    function setupFileIndicator(inputId, labelId, defaultText) {
+        const input = document.getElementById(inputId);
+        const label = document.querySelector(`label[for="${inputId}"]`);
+        if (input && label) {
+            input.addEventListener('change', function() {
+                if (this.files.length > 0) {
+                    label.innerHTML = `<svg class="w-5 h-5 text-green-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M5 13l4 4L19 7"></path></svg><span class="text-xs text-green-400">Photo selected</span>`;
+                } else {
+                    label.innerHTML = `<svg class="w-5 h-5 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 4v16m8-8H4"></path></svg><span class="text-xs text-gray-400">${defaultText}</span>`;
+                }
+            });
+        }
+    }
+
+    setupFileIndicator('etaPhotoInput', 'etaPhotoLabel', 'Add photo');
+    setupFileIndicator('breakPhotoInput', 'breakPhotoLabel', 'Add photo');
+    setupFileIndicator('startPhotoInput', 'startPhotoLabel', 'Add photo');
+    setupFileIndicator('endMileagePhotoInput', 'endMileagePhotoLabel', 'Add photo');
+    setupFileIndicator('startShiftPhotoInput', 'startShiftPhotoLabel', 'Add photo');
+    setupFileIndicator('endShiftPhotoInput', 'endShiftPhotoLabel', 'Add photo');
+    setupFileIndicator('etaImgInput', 'etaImgLabel', 'Add visual confirmation');
+
+    // ── Form submission loading states ────────────────────────────────────
+    function setupFormLoading(formId, buttonId, loadingText) {
+        const form = document.getElementById(formId);
+        const button = form ? form.querySelector('button[type="submit"]') : null;
+        if (form && button) {
+            form.addEventListener('submit', function() {
+                button.disabled = true;
+                button.textContent = loadingText;
+                button.style.opacity = '0.7';
+            });
+        }
+    }
+
+    setupFormLoading('etaForm', 'etaSubmit', 'Submitting...');
+    setupFormLoading('breakForm', 'breakSubmit', 'Submitting...');
+    setupFormLoading('telemetryForm', 'telemetrySubmit', 'Submitting...');
+
+    // ── Geolocation for break form ─────────────────────────────────────────
+    const breakForm = document.querySelector('form[action="/break_action"]');
+    if (breakForm) {
+        breakForm.addEventListener('submit', function(e) {
+            navigator.geolocation.getCurrentPosition(
+                p => {
+                    document.getElementById('breakLat').value = p.coords.latitude;
+                    document.getElementById('breakLng').value = p.coords.longitude;
+                },
+                err => {
+                    document.getElementById('breakLat').value = 'N/A';
+                    document.getElementById('breakLng').value = 'N/A';
+                }
+            );
+        });
+    }
+
+    // ── Geolocation for ETA form ──────────────────────────────────────────
+    const etaForm = document.querySelector('form[action="/submit_eta"]');
+    if (etaForm) {
+        etaForm.addEventListener('submit', function(e) {
+            navigator.geolocation.getCurrentPosition(
+                p => {
+                    document.getElementById('etaLat').value = p.coords.latitude;
+                    document.getElementById('etaLng').value = p.coords.longitude;
+                },
+                err => {
+                    document.getElementById('etaLat').value = 'N/A';
+                    document.getElementById('etaLng').value = 'N/A';
+                }
+            );
+        });
+    }
+
+    // ── LIVE TRACKING PING ────────────────────────────────────────────────
+    let _lastLat = null, _lastLng = null;
+
+    async function getBattery() {
+        try {
+            if (navigator.getBattery) {
+                const b = await navigator.getBattery();
+                return Math.round(b.level * 100);
+            }
+        } catch(e) {}
+        return 100;
+    }
+
+    async function sendPing(overrideStatus) {
+        if (!navigator.geolocation) return;
+        return new Promise(resolve => {
+            navigator.geolocation.getCurrentPosition(async pos => {
+                _lastLat = pos.coords.latitude;
+                _lastLng = pos.coords.longitude;
+                const battery  = await getBattery();
+                const opStatus = overrideStatus || ({{ 'true' if in_break else 'false' }} ? 'Break' : 'Active');
+                const payload  = {
+                    lat: _lastLat, lng: _lastLng,
+                    battery, speed: (pos.coords.speed || 0) * 2.23694,
+                    status: opStatus
+                };
+                try {
+                    await fetch('/api/ping', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify(payload)
+                    });
+                } catch(e) { console.warn('Ping failed:', e); }
+                resolve();
             }, err => {
-                document.getElementById('breakLat').value = 'N/A';
-                document.getElementById('breakLng').value = 'N/A';
-                status.textContent = 'Location unavailable; using N/A. Please take photo.';
-                document.getElementById('breakPhotoInput').click();
-            }, {enableHighAccuracy: true, timeout: 10000});
-        } else {
-            document.getElementById('breakLat').value = 'N/A';
-            document.getElementById('breakLng').value = 'N/A';
-            document.getElementById('breakPhotoInput').click();
-        }
+                // Ping with last known coords if GPS temporarily unavailable
+                if (_lastLat !== null) {
+                    const opStatus = overrideStatus || ({{ 'true' if in_break else 'false' }} ? 'Break' : 'Active');
+                    fetch('/api/ping', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ lat: _lastLat, lng: _lastLng, battery: 100, speed: 0, status: opStatus })
+                    }).catch(() => {});
+                }
+                resolve();
+            }, {enableHighAccuracy: true, timeout: 8000, maximumAge: 60000});
+        });
     }
 
-    function submitBreakForm() {
-        if (!document.getElementById('breakPhotoInput').files.length) {
-            document.getElementById('breakStatus').textContent = 'No photo taken. Break aborted.';
-            return;
-        }
-        document.getElementById('breakStatus').textContent = 'Uploading break evidence...';
-        document.getElementById('breakForm').submit();
+    // Initial ping on load
+    sendPing();
+    // Regular ping every 30s
+    setInterval(() => sendPing(), 30000);
+
+    // ── GO OFFLINE: tab close / page unload ───────────────────────────────
+    function goOffline() {
+        navigator.sendBeacon('/api/go_offline', new Blob(['{}'], {type: 'application/json'}));
     }
 
-    function triggerETA() {
-        const status = document.getElementById('breakStatus');
-        status.textContent = 'Preparing ETA photo...';
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(pos => {
-                document.getElementById('etaLat').value = pos.coords.latitude;
-                document.getElementById('etaLng').value = pos.coords.longitude;
-                status.textContent = 'ETA location captured.';
-                document.getElementById('etaPhotoInput').click();
-            }, err => {
-                document.getElementById('etaLat').value = 'N/A';
-                document.getElementById('etaLng').value = 'N/A';
-                document.getElementById('etaPhotoInput').click();
-            }, {enableHighAccuracy: true, timeout: 10000});
-        } else {
-            document.getElementById('etaLat').value = 'N/A';
-            document.getElementById('etaLng').value = 'N/A';
-            document.getElementById('etaPhotoInput').click();
-        }
-    }
+    // Page close or navigate away
+    window.addEventListener('beforeunload', goOffline);
 
-    function submitETAForm() {
-        if (!document.getElementById('etaPhotoInput').files.length) {
-            document.getElementById('breakStatus').textContent = 'No photo taken. ETA aborted.';
-            return;
+    // Phone lock screen, switch app, switch tab
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') {
+            goOffline();
+        } else if (document.visibilityState === 'visible') {
+            // Re-announce when tab comes back
+            sendPing();
         }
-        document.getElementById('breakStatus').textContent = 'Uploading ETA photo...';
-        document.getElementById('etaForm').submit();
-    }
+    });
 </script>
 """ + CHAT_HTML + """
 </body></html>"""
 
 SUCCESS_HTML = f"<html>{COMMON_HEAD}<body class='flex items-center justify-center min-h-screen p-6'><div class='glass-panel p-16 rounded-[3rem] text-center max-w-md w-full border-b-8 border-amber-400'><div class='w-24 h-24 bg-amber-400 rounded-full flex items-center justify-center mx-auto mb-8 shadow-2xl shadow-amber-400/40'><svg class='w-12 h-12 text-black' fill='none' stroke='currentColor' viewBox='0 0 24 24'><path stroke-linecap='round' stroke-linejoin='round' stroke-width='4' d='M5 13l4 4L19 7'></path></svg></div><h1 class='text-4xl font-black text-white mb-4 uppercase italic tracking-tighter'>Data Synced</h1><p class='text-gray-500 font-bold uppercase text-xs tracking-[3px] mb-10'>Transmission Securely Filed</p><a href='/op' class='btn-main px-12 py-5 inline-block text-sm shadow-xl'>Return to Interface</a></div></body></html>"
 
-@app.route("/test_slack", methods=["GET"])
-@admin_required
-def test_slack():
-    """Test Slack DM with photo."""
-    import glob
-    # Find a real uploaded file
-    files = glob.glob(os.path.join(UPLOAD_FOLDER, "*.jpg")) + glob.glob(os.path.join(UPLOAD_FOLDER, "*.png"))
-    if files:
-        filename = os.path.basename(files[0])
-        notify_slack(f"🧪 TEST: Photo upload test from opscenter", filename)
-        return f"Sent test photo: {filename}. Check Slack DMs!", 200
-    else:
-        notify_slack("🧪 TEST: Text-only test (no photos found)")
-        return "Sent text-only test. Upload a photo first for full test.", 200
+# ─── LIVE MAP HTML ───────────────────────────────────────────
+LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
+<main class="max-w-7xl mx-auto px-6 pb-24">
+    <div class="flex items-center justify-between mb-8">
+        <div>
+            <div class="flex items-center gap-3 mb-1">
+                <div class="w-2 h-2 bg-green-400 rounded-full" style="animation: ping 1.5s ease-out infinite;"></div>
+                <h1 class="text-4xl font-black text-white italic uppercase tracking-tighter">Live <span class="text-amber-400">Ops Map</span></h1>
+            </div>
+            <p class="text-gray-500 font-bold uppercase text-xs tracking-[2px]">Real-Time Operator Tracking · Auto-refresh 30s</p>
+        </div>
+        <a href="/admin" class="flex items-center gap-2 text-gray-400 hover:text-white font-bold text-sm transition px-4 py-2 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10">
+            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+            Back to Admin
+        </a>
+    </div>
 
+    <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <div class="lg:col-span-2">
+            <div class="glass-panel rounded-[2rem] overflow-hidden" style="height:540px;position:relative;">
+                <div id="map" style="width:100%;height:100%;"></div>
+                <div id="map-loading" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(11,15,26,0.95);border-radius:2rem;z-index:500;">
+                    <div style="text-align:center;">
+                        <div style="width:44px;height:44px;border:3px solid rgba(251,191,36,0.2);border-top-color:#fbbf24;border-radius:50%;animation:spin 1s linear infinite;margin:0 auto 14px;"></div>
+                        <p style="color:#fbbf24;font-weight:800;font-size:0.78rem;text-transform:uppercase;letter-spacing:2px;">Initializing Map</p>
+                    </div>
+                </div>
+                <style>
+                @keyframes spin { to { transform: rotate(360deg); } }
+                @keyframes ring-pulse { 0% { transform: scale(0.9); opacity: 0.6; } 70% { transform: scale(1.6); opacity: 0; } 100% { transform: scale(0.9); opacity: 0; } }
+                </style>
+                <!-- Refresh progress bar -->
+                <div id="refresh-bar" style="position:absolute;bottom:0;left:0;height:3px;background:linear-gradient(90deg,#fbbf24,#f59e0b);border-radius:0 2px 2px 0;transition:width 1s linear;z-index:600;"></div>
+                <!-- Legend -->
+                <div style="position:absolute;bottom:1.2rem;left:1rem;background:rgba(11,15,26,0.88);backdrop-filter:blur(16px);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:0.55rem 0.9rem;display:flex;gap:1rem;z-index:600;">
+                    <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#22c55e;border-radius:50%;border:2px solid rgba(255,255,255,0.6);"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Active</span></div>
+                    <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#f59e0b;border-radius:50%;border:2px solid rgba(255,255,255,0.6);"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Break</span></div>
+                    <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#ef4444;border-radius:50%;border:2px solid rgba(255,255,255,0.6);opacity:0.6;"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Offline</span></div>
+                </div>
+                <!-- HUD -->
+                <div style="position:absolute;top:1rem;left:1rem;z-index:600;display:flex;flex-direction:column;gap:0.4rem;pointer-events:none;">
+                    <div style="background:rgba(11,15,26,0.85);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.3rem 0.7rem;font-size:0.6rem;font-family:'JetBrains Mono',monospace;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;">
+                        ONLINE: <span id="hud-count" style="color:#fbbf24;">—</span>
+                    </div>
+                    <div style="background:rgba(11,15,26,0.85);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.3rem 0.7rem;font-size:0.6rem;font-family:'JetBrains Mono',monospace;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;">
+                        REFRESH IN: <span id="hud-timer" style="color:#fbbf24;">30</span>s
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="space-y-4">
+            <!-- Alerts Panel -->
+            <div class="glass-panel p-5 rounded-[1.5rem]">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-base font-black text-white flex items-center gap-2">
+                        <span style="width:8px;height:8px;background:#ef4444;border-radius:50%;display:inline-block;animation:ping 1.5s ease-out infinite;"></span>
+                        Active Alerts
+                    </h3>
+                    <span id="alert-count-badge" class="text-[10px] font-black text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded-full"></span>
+                </div>
+                <div id="alerts-list" class="space-y-2 max-h-[220px] overflow-y-auto">
+                    {% for alert in alerts %}
+                    <div class="bg-red-500/8 border border-red-500/20 p-3 rounded-xl" data-alert-id="{{ alert.id }}">
+                        <div class="flex items-start justify-between gap-2">
+                            <div class="flex-1 min-w-0">
+                                <p class="text-xs font-black text-red-400 uppercase tracking-wide">{{ alert.type }}</p>
+                                <p class="text-xs text-gray-400 mt-0.5 leading-snug">{{ alert.message }}</p>
+                                <p class="text-[10px] text-gray-600 mt-1 font-mono">{{ alert.created_at.strftime('%H:%M') }}</p>
+                            </div>
+                            <button onclick="resolveAlert({{ alert.id }})" class="flex-shrink-0 text-[10px] font-black bg-green-500/15 text-green-400 px-2 py-1 rounded-lg hover:bg-green-500/25 transition uppercase tracking-wide">✓ Resolve</button>
+                        </div>
+                    </div>
+                    {% else %}
+                    <div style="text-align:center;padding:1.5rem 0;">
+                        <p style="font-size:1.5rem;">✅</p>
+                        <p class="text-gray-600 text-xs font-bold mt-1">No active alerts</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <!-- Operators Panel -->
+            <div class="glass-panel p-5 rounded-[1.5rem]">
+                <h3 class="text-base font-black text-white mb-4">Operators Online</h3>
+                <div id="operators-list" class="space-y-2 max-h-[260px] overflow-y-auto">
+                    {% for status in statuses %}
+                    <div class="flex items-center justify-between p-3 bg-white/3 hover:bg-white/5 rounded-xl transition cursor-pointer" onclick="focusOp('{{ status.username }}')" data-op="{{ status.username }}">
+                        <div class="flex items-center gap-3">
+                            <div class="w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs {{ 'bg-green-500/15 text-green-400' if status.status == 'Active' else 'bg-amber-500/15 text-amber-400' if status.status == 'Break' else 'bg-red-500/15 text-red-400' }}">{{ status.username[0]|upper }}</div>
+                            <div>
+                                <p class="text-sm font-bold text-white leading-none">{{ status.username }}</p>
+                                <p class="text-[10px] text-gray-500 font-mono mt-0.5">{{ status.last_ping.strftime('%H:%M') if status.last_ping else 'N/A' }}</p>
+                            </div>
+                        </div>
+                        <div class="text-right">
+                            <span class="text-[10px] font-black uppercase px-2 py-0.5 rounded-full {{ 'bg-green-500/15 text-green-400' if status.status == 'Active' else 'bg-amber-500/15 text-amber-400' if status.status == 'Break' else 'bg-red-500/15 text-red-400' }}">{{ status.status }}</span>
+                            {% if status.battery %}<p class="text-[10px] text-gray-600 font-mono mt-1">🔋 {{ status.battery }}%</p>{% endif %}
+                        </div>
+                    </div>
+                    {% else %}
+                    <div style="text-align:center;padding:1.5rem 0;">
+                        <p style="font-size:1.5rem;">📡</p>
+                        <p class="text-gray-600 text-xs font-bold mt-1">No operators online</p>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+    </div>
+</main>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+(function() {
+    let map, markers = {}, refreshCountdown = 30, refreshTimer = null;
+    const STATUS_COLOR = { Active: '#22c55e', Break: '#f59e0b', Offline: '#ef4444' };
+
+    function initMap() {
+        map = L.map('map', { zoomControl: false, attributionControl: false }).setView([35.7796, -5.8136], 12);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            subdomains: 'abcd', maxZoom: 19
+        }).addTo(map);
+        L.control.zoom({ position: 'topright' }).addTo(map);
+        document.getElementById('map-loading').style.display = 'none';
+        refresh();
+        startCountdown();
+    }
+
+    function createIcon(status, username) {
+        const color    = STATUS_COLOR[status] || '#94a3b8';
+        const initial  = (username || '?')[0].toUpperCase();
+        const isOnline = status !== 'Offline';
+        return L.divIcon({
+            className: '',
+            html: `<div style="position:relative;width:38px;height:38px;">
+                ${isOnline ? `<div style="position:absolute;inset:-5px;border-radius:50%;border:2px solid ${color};opacity:0;animation:ring-pulse 2.5s ease-out infinite;"></div>` : ''}
+                <div style="position:absolute;inset:0;border-radius:50%;background:${color}20;border:2.5px solid ${color};
+                    display:flex;align-items:center;justify-content:center;
+                    font-family:'Plus Jakarta Sans',sans-serif;font-weight:900;font-size:13px;color:${color};
+                    box-shadow:0 0 ${isOnline ? '14px' : '0px'} ${color}55;
+                    ${isOnline ? '' : 'opacity:0.45;'}
+                ">${initial}</div>
+            </div>`,
+            iconSize:    [38, 38],
+            iconAnchor:  [19, 19],
+            popupAnchor: [0, -22],
+        });
+    }
+
+    function buildPopup(op) {
+        const color   = STATUS_COLOR[op.status] || '#94a3b8';
+        const batColor= op.battery >= 50 ? '#22c55e' : op.battery >= 20 ? '#f59e0b' : '#ef4444';
+        const lastSeen= op.seconds_ago < 60 ? op.seconds_ago + 's ago'
+                       : op.seconds_ago < 3600 ? Math.floor(op.seconds_ago/60) + 'm ago'
+                       : Math.floor(op.seconds_ago/3600) + 'h ago';
+        return `<div style="font-family:'Plus Jakarta Sans',sans-serif;min-width:200px;padding:4px">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+                <div style="width:32px;height:32px;border-radius:8px;background:${color}20;border:1px solid ${color}50;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:0.9rem;color:${color}">${(op.username||'?')[0].toUpperCase()}</div>
+                <div><div style="font-weight:800;font-size:0.9rem;color:#e2e8f0">${op.username}</div><div style="font-size:0.58rem;font-weight:700;color:${color};text-transform:uppercase;letter-spacing:0.1em">${op.status}</div></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-bottom:7px">
+                <div style="background:rgba(0,0,0,0.4);border-radius:6px;padding:5px 7px"><div style="font-size:0.48rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:1px">Speed</div><div style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;font-weight:700;color:#e2e8f0">${op.speed} <span style="font-size:0.52rem;color:#64748b">mph</span></div></div>
+                <div style="background:rgba(0,0,0,0.4);border-radius:6px;padding:5px 7px"><div style="font-size:0.48rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:1px">Last ping</div><div style="font-family:'JetBrains Mono',monospace;font-size:0.78rem;font-weight:700;color:#e2e8f0">${lastSeen}</div></div>
+            </div>
+            <div style="background:rgba(0,0,0,0.4);border-radius:6px;padding:5px 7px;margin-bottom:5px">
+                <div style="font-size:0.48rem;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;margin-bottom:3px">Battery</div>
+                <div style="display:flex;align-items:center;gap:6px">
+                    <div style="flex:1;height:4px;background:rgba(255,255,255,0.07);border-radius:2px;overflow:hidden"><div style="width:${op.battery}%;height:100%;border-radius:2px;background:${batColor};transition:width 0.5s"></div></div>
+                    <span style="font-family:'JetBrains Mono',monospace;font-size:0.68rem;font-weight:700;color:#e2e8f0">${op.battery}%</span>
+                </div>
+            </div>
+            <div style="font-family:'JetBrains Mono',monospace;font-size:0.55rem;color:#475569">${op.lat}, ${op.lng}</div>
+        </div>`;
+    }
+
+    function updateMarkers(data) {
+        const current = new Set(data.map(d => d.username));
+        Object.keys(markers).forEach(name => {
+            if (!current.has(name)) { map.removeLayer(markers[name]); delete markers[name]; }
+        });
+        data.forEach(op => {
+            if (!op.lat || op.lat === 'N/A' || !op.lng) return;
+            const lat = parseFloat(op.lat), lng = parseFloat(op.lng);
+            if (isNaN(lat) || isNaN(lng)) return;
+            const icon = createIcon(op.status, op.username);
+            if (markers[op.username]) {
+                markers[op.username].setLatLng([lat, lng]);
+                markers[op.username].setIcon(icon);
+                markers[op.username].getPopup()?.setContent(buildPopup(op));
+            } else {
+                const m = L.marker([lat, lng], { icon }).addTo(map).bindPopup(buildPopup(op), { maxWidth: 230 });
+                m.on('click', () => selectOp(op.username));
+                markers[op.username] = m;
+            }
+        });
+        document.getElementById('hud-count').textContent = data.filter(o => o.status !== 'Offline').length;
+    }
+
+    function selectOp(username) {
+        const m = markers[username];
+        if (m) { map.flyTo(m.getLatLng(), 16, { animate: true, duration: 0.7 }); m.openPopup(); }
+        document.querySelectorAll('[data-op]').forEach(el => {
+            el.style.background = el.dataset.op === username ? 'rgba(251,191,36,0.08)' : '';
+            el.style.borderColor = el.dataset.op === username ? 'rgba(251,191,36,0.25)' : '';
+        });
+    }
+    window.focusOp = selectOp;
+
+    function renderOperators(data) {
+        const container = document.getElementById('operators-list');
+        if (!data.length) {
+            container.innerHTML = '<div style="text-align:center;padding:1.5rem 0;"><p style="font-size:1.5rem;">📡</p><p class="text-gray-600 text-xs font-bold mt-1">No operators online</p></div>';
+            return;
+        }
+        const order = { Active: 0, Break: 1, Offline: 2 };
+        data.sort((a, b) => (order[a.status] || 0) - (order[b.status] || 0));
+        container.innerHTML = data.map(op => {
+            const cls     = op.status === 'Active' ? 'bg-green-500/15 text-green-400' : op.status === 'Break' ? 'bg-amber-500/15 text-amber-400' : 'bg-red-500/15 text-red-400';
+            const lastSeen= op.seconds_ago < 60 ? op.seconds_ago + 's ago' : Math.floor(op.seconds_ago/60) + 'm ago';
+            const batColor = op.battery >= 50 ? '#22c55e' : op.battery >= 20 ? '#f59e0b' : '#ef4444';
+            return `<div class="flex flex-col p-3 bg-white/3 hover:bg-white/5 rounded-xl transition cursor-pointer gap-2" onclick="focusOp('${op.username}')" data-op="${op.username}">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center gap-3">
+                        <div class="w-8 h-8 rounded-xl flex items-center justify-center font-black text-xs ${cls}">${op.username[0].toUpperCase()}</div>
+                        <div>
+                            <p class="text-sm font-bold text-white leading-none">${op.username}</p>
+                            <p class="text-[10px] text-gray-500 font-mono mt-0.5">${lastSeen}</p>
+                        </div>
+                    </div>
+                    <div class="text-right">
+                        <span class="text-[10px] font-black uppercase px-2 py-0.5 rounded-full ${cls}">${op.status}</span>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:6px;">
+                    <div style="flex:1;height:3px;background:rgba(255,255,255,0.06);border-radius:2px;overflow:hidden">
+                        <div style="width:${op.battery}%;height:100%;border-radius:2px;background:${batColor};"></div>
+                    </div>
+                    <span style="font-size:0.55rem;font-family:'JetBrains Mono',monospace;color:#64748b;flex-shrink:0">${op.battery}%</span>
+                    <span style="font-size:0.55rem;font-family:'JetBrains Mono',monospace;color:#64748b;margin-left:8px">${op.speed} mph</span>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    function renderAlerts(alerts) {
+        const container = document.getElementById('alerts-list');
+        const badge     = document.getElementById('alert-count-badge');
+        badge.textContent = alerts.length > 0 ? alerts.length + ' ACTIVE' : '';
+        if (!alerts.length) {
+            container.innerHTML = '<div style="text-align:center;padding:1.5rem 0;"><p style="font-size:1.5rem;">✅</p><p class="text-gray-600 text-xs font-bold mt-1">No active alerts</p></div>';
+            return;
+        }
+        container.innerHTML = alerts.map(a => `
+            <div class="bg-red-500/8 border border-red-500/20 p-3 rounded-xl" data-alert-id="${a.id}">
+                <div class="flex items-start justify-between gap-2">
+                    <div class="flex-1 min-w-0">
+                        <p class="text-xs font-black text-red-400 uppercase tracking-wide">${a.type}</p>
+                        <p class="text-xs text-gray-400 mt-0.5 leading-snug">${a.message}</p>
+                        <p class="text-[10px] text-gray-600 mt-1 font-mono">${a.created_at}</p>
+                    </div>
+                    <button onclick="resolveAlert(${a.id})" class="flex-shrink-0 text-[10px] font-black bg-green-500/15 text-green-400 px-2 py-1 rounded-lg hover:bg-green-500/25 transition uppercase tracking-wide">✓ Resolve</button>
+                </div>
+            </div>`).join('');
+    }
+
+    async function refresh() {
+        try {
+            const [statusRes, alertsRes] = await Promise.all([
+                fetch('/api/live_status'), fetch('/api/alerts')
+            ]);
+            const [statusData, alertsData] = await Promise.all([
+                statusRes.json(), alertsRes.json()
+            ]);
+            updateMarkers(statusData);
+            renderOperators(statusData);
+            renderAlerts(alertsData);
+        } catch(e) { console.error('Refresh failed:', e); }
+    }
+
+    function startCountdown() {
+        refreshCountdown = 30;
+        document.getElementById('refresh-bar').style.width = '100%';
+        clearInterval(refreshTimer);
+        refreshTimer = setInterval(() => {
+            refreshCountdown--;
+            document.getElementById('hud-timer').textContent = refreshCountdown;
+            const pct = (refreshCountdown / 30) * 100;
+            document.getElementById('refresh-bar').style.width = pct + '%';
+            if (refreshCountdown <= 0) {
+                clearInterval(refreshTimer);
+                refresh().then(startCountdown);
+            }
+        }, 1000);
+    }
+
+    window.resolveAlert = function(id) {
+        fetch('/api/alert/' + id + '/resolve', { method: 'POST' })
+            .then(r => r.json())
+            .then(d => {
+                if (d.ok) {
+                    const el = document.querySelector('[data-alert-id="' + id + '"]');
+                    if (el) { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }
+                    refresh();
+                }
+            });
+    };
+
+    // Refresh immediately when admin returns to this tab
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            clearInterval(refreshTimer);
+            refresh().then(startCountdown);
+        }
+    });
+
+    document.addEventListener('DOMContentLoaded', initMap);
+})();
+</script>
+</body></html>
+"""
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
