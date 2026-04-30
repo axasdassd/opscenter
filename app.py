@@ -2321,6 +2321,11 @@ LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
                     <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#f59e0b;border-radius:50%;border:2px solid rgba(255,255,255,0.6);"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Break</span></div>
                     <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#ef4444;border-radius:50%;border:2px solid rgba(255,255,255,0.6);opacity:0.6;"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Offline</span></div>
                 </div>
+                <!-- Map Mode Toggle -->
+                <button id="mapModeToggle" onclick="toggleMapMode()" style="position:absolute;top:1rem;right:1rem;z-index:600;background:rgba(11,15,26,0.88);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:0.5rem 0.9rem;display:flex;align-items:center;gap:8px;cursor:pointer;transition:all 0.2s ease;">
+                    <svg id="mapModeIcon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#fbbf24;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                    <span id="mapModeText" style="font-size:0.65rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.1em;">Light</span>
+                </button>
                 <!-- HUD -->
                 <div style="position:absolute;top:1rem;left:1rem;z-index:600;display:flex;flex-direction:column;gap:0.4rem;pointer-events:none;">
                     <div style="background:rgba(11,15,26,0.85);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.3rem 0.7rem;font-size:0.6rem;font-family:'JetBrains Mono',monospace;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;">
@@ -2401,15 +2406,43 @@ LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
     let map, markers = {}, refreshCountdown = 30, refreshTimer = null;
     const STATUS_COLOR = { Active: '#22c55e', Break: '#f59e0b', Offline: '#ef4444' };
 
+    let tileLayer = null;
+    let isDarkMode = localStorage.getItem('mapMode') !== 'light';
+
     function initMap() {
         map = L.map('map', { zoomControl: false, attributionControl: false }).setView([35.7796, -5.8136], 12);
-        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        tileLayer = L.tileLayer(isDarkMode ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
             subdomains: 'abcd', maxZoom: 19
         }).addTo(map);
         L.control.zoom({ position: 'topright' }).addTo(map);
+        updateMapModeUI();
         document.getElementById('map-loading').style.display = 'none';
         refresh();
         startCountdown();
+    }
+
+    function toggleMapMode() {
+        isDarkMode = !isDarkMode;
+        localStorage.setItem('mapMode', isDarkMode ? 'dark' : 'light');
+        if (tileLayer) {
+            map.removeLayer(tileLayer);
+            tileLayer = L.tileLayer(isDarkMode ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+                subdomains: 'abcd', maxZoom: 19
+            }).addTo(map);
+        }
+        updateMapModeUI();
+    }
+
+    function updateMapModeUI() {
+        const icon = document.getElementById('mapModeIcon');
+        const text = document.getElementById('mapModeText');
+        if (isDarkMode) {
+            icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path>';
+            text.textContent = 'Light';
+        } else {
+            icon.innerHTML = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z"></path>';
+            text.textContent = 'Dark';
+        }
     }
 
     function createIcon(status, username) {
