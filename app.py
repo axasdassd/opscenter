@@ -2293,10 +2293,16 @@ LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
             </div>
             <p class="text-gray-500 font-bold uppercase text-xs tracking-[2px]">Real-Time Operator Tracking · Auto-refresh 30s</p>
         </div>
-        <a href="/admin" class="flex items-center gap-2 text-gray-400 hover:text-white font-bold text-sm transition px-4 py-2 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10">
-            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
-            Back to Admin
-        </a>
+        <div class="flex items-center gap-3">
+            <button id="mapModeToggle" class="flex items-center gap-2 text-gray-400 hover:text-white font-bold text-sm transition px-4 py-2 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10">
+                <svg id="mapModeIcon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#fbbf24;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+                <span id="mapModeText">Light</span>
+            </button>
+            <a href="/admin" class="flex items-center gap-2 text-gray-400 hover:text-white font-bold text-sm transition px-4 py-2 rounded-xl hover:bg-white/5 border border-transparent hover:border-white/10">
+                <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+                Back to Admin
+            </a>
+        </div>
     </div>
 
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -2321,11 +2327,6 @@ LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
                     <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#f59e0b;border-radius:50%;border:2px solid rgba(255,255,255,0.6);"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Break</span></div>
                     <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#ef4444;border-radius:50%;border:2px solid rgba(255,255,255,0.6);opacity:0.6;"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Offline</span></div>
                 </div>
-                <!-- Map Mode Toggle -->
-                <button id="mapModeToggle" style="position:absolute;top:4rem;right:1rem;z-index:600;background:rgba(11,15,26,0.88);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:0.5rem 0.9rem;display:flex;align-items:center;gap:8px;cursor:pointer;transition:all 0.2s ease;">
-                    <svg id="mapModeIcon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#fbbf24;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
-                    <span id="mapModeText" style="font-size:0.65rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.1em;">Light</span>
-                </button>
                 <!-- HUD -->
                 <div style="position:absolute;top:1rem;left:1rem;z-index:600;display:flex;flex-direction:column;gap:0.4rem;pointer-events:none;">
                     <div style="background:rgba(11,15,26,0.85);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:0.3rem 0.7rem;font-size:0.6rem;font-family:'JetBrains Mono',monospace;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:0.1em;">
@@ -2417,6 +2418,12 @@ LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
         L.control.zoom({ position: 'topright' }).addTo(map);
         updateMapModeUI();
         document.getElementById('map-loading').style.display = 'none';
+
+        const toggleBtn = document.getElementById('mapModeToggle');
+        if (toggleBtn) {
+            toggleBtn.addEventListener('click', toggleMapMode);
+        }
+
         refresh();
         startCountdown();
     }
