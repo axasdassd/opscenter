@@ -885,6 +885,7 @@ def set_address():
         ]
         if booking_time:
             blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": f"*Booking Time:* {booking_time}\n\nPlease be on time for your scheduled appointment."}})
+        blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": "*Please provide your ETA on the opscenter platform immediately.*"}})
         blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"Assigned by OpsCenter at {datetime.now().strftime('%Y-%m-%d %H:%M')}"}]})
         send_slack_dm(op.slack_user_id, "", blocks=blocks)
     return redirect(url_for("admin"))
