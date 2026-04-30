@@ -2322,7 +2322,7 @@ LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
                     <div style="display:flex;align-items:center;gap:5px;"><div style="width:10px;height:10px;background:#ef4444;border-radius:50%;border:2px solid rgba(255,255,255,0.6);opacity:0.6;"></div><span style="font-size:0.62rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.08em;">Offline</span></div>
                 </div>
                 <!-- Map Mode Toggle -->
-                <button id="mapModeToggle" onclick="toggleMapMode()" style="position:absolute;top:1rem;right:1rem;z-index:600;background:rgba(11,15,26,0.88);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:0.5rem 0.9rem;display:flex;align-items:center;gap:8px;cursor:pointer;transition:all 0.2s ease;">
+                <button id="mapModeToggle" style="position:absolute;top:4rem;right:1rem;z-index:600;background:rgba(11,15,26,0.88);backdrop-filter:blur(12px);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:0.5rem 0.9rem;display:flex;align-items:center;gap:8px;cursor:pointer;transition:all 0.2s ease;">
                     <svg id="mapModeIcon" width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color:#fbbf24;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
                     <span id="mapModeText" style="font-size:0.65rem;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.1em;">Light</span>
                 </button>
@@ -2524,6 +2524,7 @@ LIVE_MAP_HTML = f"""<html>{COMMON_HEAD}<body>""" + NAV_BAR + """
         });
     }
     window.focusOp = selectOp;
+    window.toggleMapMode = toggleMapMode;
 
     function renderOperators(data) {
         const container = document.getElementById('operators-list');
