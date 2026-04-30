@@ -1288,8 +1288,37 @@ def check_alerts():
         db.session.commit()
 
 
+def cleanup_old_records():
+    with app.app_context():
+        today = datetime.now().strftime('%Y-%m-%d')
+        try:
+            # Delete Log records from previous days
+            old_logs = Log.query.filter(~Log.submitted_at.like(f'{today}%')).all()
+            for log in old_logs:
+                db.session.delete(log)
+            log_count = len(old_logs)
+
+            # Delete Break records from previous days
+            old_breaks = Break.query.filter(~Break.timestamp.like(f'{today}%')).all()
+            for brk in old_breaks:
+                db.session.delete(brk)
+            break_count = len(old_breaks)
+
+            # Delete Eta records from previous days
+            old_etas = Eta.query.filter(~Eta.timestamp.like(f'{today}%')).all()
+            for eta in old_etas:
+                db.session.delete(eta)
+            eta_count = len(old_etas)
+
+            db.session.commit()
+            print(f"Cleanup: Deleted {log_count} logs, {break_count} breaks, {eta_count} ETAs from previous days")
+        except Exception as e:
+            print(f"Cleanup error: {e}")
+            db.session.rollback()
+
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=check_alerts, trigger="interval", minutes=2)
+scheduler.add_job(func=cleanup_old_records, trigger="cron", hour=0, minute=0)
 scheduler.start()
 
 # ================================================================
