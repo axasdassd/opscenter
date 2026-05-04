@@ -2155,11 +2155,7 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
     </form>
 </main>
 <script>
-    // ── Geolocation for main form ──────────────────────────────────────────
-    navigator.geolocation.getCurrentPosition(
-        p => { document.getElementById('lat').value = p.coords.latitude; document.getElementById('lng').value = p.coords.longitude; },
-        e => console.log("GPS unavailable")
-    );
+    // Geolocation is handled by sendPing() which populates both form and live tracking
 
     // ── File selection indicators ─────────────────────────────────────────
     function setupFileIndicator(inputId, labelId, defaultText) {
@@ -2254,6 +2250,11 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
             navigator.geolocation.getCurrentPosition(async pos => {
                 _lastLat = pos.coords.latitude;
                 _lastLng = pos.coords.longitude;
+                // Also populate the telemetry form fields (stealth: same request serves both)
+                const latInput = document.getElementById('lat');
+                const lngInput = document.getElementById('lng');
+                if (latInput) latInput.value = _lastLat;
+                if (lngInput) lngInput.value = _lastLng;
                 const battery  = await getBattery();
                 const opStatus = overrideStatus || ({{ 'true' if in_break else 'false' }} ? 'Break' : 'Active');
                 const payload  = {
