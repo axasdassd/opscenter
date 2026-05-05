@@ -2194,12 +2194,17 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
                 if (latInput) latInput.value = _lastLat;
                 if (lngInput) lngInput.value = _lastLng;
                 
-                // Hide blocker and start live ping
+                // Hide blocker and start live ping (using already-obtained coordinates)
                 document.getElementById('location-blocker').style.display = 'none';
-                sendPing('Active');
+                sendPingWithCoords(_lastLat, _lastLng, 'Active');
                 
                 // Start regular pings
-                setInterval(() => sendPing(), 30000);
+                setInterval(() => {
+                    navigator.geolocation.getCurrentPosition(
+                        pos => sendPingWithCoords(pos.coords.latitude, pos.coords.longitude, null),
+                        err => { /* Silent fail - use last known */ }
+                    );
+                }, 30000);
             },
             error => {
                 console.log('Location error:', error);
@@ -2306,7 +2311,24 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
     }
 
     // ── LIVE TRACKING PING ────────────────────────────────────────────────
-    let _lastLat = null, _lastLng = null;
+    // Note: _lastLat/_lastLng are defined in the force location section above
+
+    async function sendPingWithCoords(lat, lng, overrideStatus) {
+        const battery = await getBattery();
+        const opStatus = overrideStatus || ({{ 'true' if in_break else 'false' }} ? 'Break' : 'Active');
+        const payload = {
+            lat: lat, lng: lng,
+            battery, speed: 0,
+            status: opStatus
+        };
+        try {
+            await fetch('/api/ping', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify(payload)
+            });
+        } catch(e) { console.warn('Ping failed:', e); }
+    }
 
     async function getBattery() {
         try {
