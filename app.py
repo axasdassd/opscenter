@@ -831,34 +831,6 @@ def static_files(filename):
 
     return '', 404
 
-@app.route("/sw.js")
-def service_worker():
-    sw_code = """
-const CACHE_NAME = 'opscenter-v1';
-const urlsToCache = [
-    '/',
-    '/static/icon-192.png'
-];
-
-self.addEventListener('install', event => {
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then(cache => cache.addAll(urlsToCache))
-    );
-});
-
-self.addEventListener('fetch', event => {
-    event.respondWith(
-        caches.match(event.request)
-            .then(response => {
-                if (response) return response;
-                return fetch(event.request);
-            })
-    );
-});
-"""
-    return sw_code, 200, {'Content-Type': 'application/javascript'}
-
 @app.route("/force_logout_all", methods=["POST"])
 @admin_required
 def force_logout_all():
@@ -1326,6 +1298,30 @@ def api_vapid_public_key():
 @app.route("/sw.js")
 def service_worker():
     sw_js = """
+const CACHE_NAME = 'opscenter-v1';
+const urlsToCache = ['/', '/static/icon-192.png'];
+
+// Cache for PWA installability
+self.addEventListener('install', event => {
+    event.waitUntil(
+        caches.open(CACHE_NAME)
+            .then(cache => cache.addAll(urlsToCache))
+            .then(() => self.skipWaiting())
+    );
+});
+
+self.addEventListener('activate', event => {
+    event.waitUntil(self.clients.claim());
+});
+
+self.addEventListener('fetch', event => {
+    event.respondWith(
+        caches.match(event.request)
+            .then(response => response || fetch(event.request))
+    );
+});
+
+// Push notifications
 self.addEventListener('push', function(event) {
     let data = {};
     try { data = event.data.json(); } catch(e) { data = { title: 'OpsCenter', body: event.data ? event.data.text() : 'New message' }; }
@@ -1333,6 +1329,7 @@ self.addEventListener('push', function(event) {
         vibrate: [200, 100, 200], data: { url: data.url || '/' }, requireInteraction: false };
     event.waitUntil(self.registration.showNotification(data.title || 'OpsCenter', options));
 });
+
 self.addEventListener('notificationclick', function(event) {
     event.notification.close();
     const url = event.notification.data && event.notification.data.url ? event.notification.data.url : '/';
@@ -1343,8 +1340,6 @@ self.addEventListener('notificationclick', function(event) {
         if (clients.openWindow) return clients.openWindow(url);
     }));
 });
-self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', () => self.clients.claim());
 """
     response = make_response(sw_js)
     response.headers["Content-Type"]  = "application/javascript"
