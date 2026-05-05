@@ -41,14 +41,15 @@ VAPID_CLAIMS      = {"sub": os.environ.get("VAPID_MAILTO", "mailto:admin@opscent
 # ---------------- MODELS ----------------
 
 class User(db.Model):
-    id            = db.Column(db.Integer, primary_key=True)
-    username      = db.Column(db.String(80), unique=True, nullable=False)
-    password      = db.Column(db.String(255), nullable=False)
-    role          = db.Column(db.String(20), default="op")
-    last_login    = db.Column(db.String(50), default="Never")
-    status        = db.Column(db.String(20), default="Active")
-    slack_user_id = db.Column(db.String(50), nullable=True)
-    logs          = db.relationship("Log", backref="operator", lazy=True, foreign_keys="Log.user_id")
+    id               = db.Column(db.Integer, primary_key=True)
+    username         = db.Column(db.String(80), unique=True, nullable=False)
+    password         = db.Column(db.String(255), nullable=False)
+    role             = db.Column(db.String(20), default="op")
+    last_login       = db.Column(db.String(50), default="Never")
+    status           = db.Column(db.String(20), default="Active")
+    slack_user_id    = db.Column(db.String(50), nullable=True)
+    session_version  = db.Column(db.Integer, default=0)
+    logs             = db.relationship("Log", backref="operator", lazy=True, foreign_keys="Log.user_id")
 
 class Log(db.Model):
     id                = db.Column(db.Integer, primary_key=True)
@@ -158,6 +159,15 @@ def login_required(f):
     @wraps(f)
     def decorated_function(*args, **kwargs):
         if "user_id" not in session:
+            return redirect(url_for("index"))
+        # Check if session was invalidated by force logout
+        user = User.query.get(session["user_id"])
+        if not user:
+            session.clear()
+            return redirect(url_for("index"))
+        stored_version = session.get("session_version", 0)
+        if stored_version < user.session_version:
+            session.clear()
             return redirect(url_for("index"))
         return f(*args, **kwargs)
     return decorated_function
@@ -557,17 +567,27 @@ def init_db():
         try:
             with db.engine.connect() as conn:
                 if 'postgresql' in str(db.engine.url).lower():
+                    # Check and add slack_user_id
                     result = conn.execute(db.text("""
                         SELECT column_name FROM information_schema.columns
                         WHERE table_name = 'user' AND column_name = 'slack_user_id'
                     """))
                     if not result.fetchone():
                         conn.execute(db.text('ALTER TABLE "user" ADD COLUMN slack_user_id VARCHAR(50)'))
+                    # Check and add session_version
+                    result2 = conn.execute(db.text("""
+                        SELECT column_name FROM information_schema.columns
+                        WHERE table_name = 'user' AND column_name = 'session_version'
+                    """))
+                    if not result2.fetchone():
+                        conn.execute(db.text('ALTER TABLE "user" ADD COLUMN session_version INTEGER DEFAULT 0'))
                 else:
                     result  = conn.execute(db.text("PRAGMA table_info(user)"))
                     columns = [row[1] for row in result.fetchall()]
                     if 'slack_user_id' not in columns:
                         conn.execute(db.text("ALTER TABLE user ADD COLUMN slack_user_id VARCHAR(50)"))
+                    if 'session_version' not in columns:
+                        conn.execute(db.text("ALTER TABLE user ADD COLUMN session_version INTEGER DEFAULT 0"))
                 conn.commit()
         except Exception as e:
             print(f"Migration info: {e}")
@@ -602,6 +622,7 @@ def login():
         session["user_id"]   = user.id
         session["username"]  = user.username
         session["role"]      = user.role
+        session["session_version"] = user.session_version
         get_or_create_general_channel()
         return redirect(url_for("admin") if user.role == "admin" else url_for("op"))
     return redirect(url_for("index"))
@@ -694,6 +715,23 @@ def delete_eta(eta_id):
         db.session.delete(record)
         db.session.commit()
     return redirect(url_for("admin"))
+
+@app.route("/force_logout_all", methods=["POST"])
+@admin_required
+def force_logout_all():
+    """Force logout all operators except the current admin."""
+    admin_id = session["user_id"]
+    operators = User.query.filter(User.id != admin_id, User.role == "op").all()
+    count = 0
+    for op in operators:
+        op.session_version += 1
+        count += 1
+    db.session.commit()
+    log_event(f"FORCE LOGOUT ALL: {count} operators logged out by {session['username']}")
+    # Mark all operators as offline in LiveStatus
+    LiveStatus.query.filter(LiveStatus.user_id != admin_id).update({"status": "Offline"})
+    db.session.commit()
+    return jsonify({"ok": True, "count": count})
 
 @app.route("/edit_log/<int:log_id>", methods=["POST"])
 @admin_required
@@ -1863,6 +1901,10 @@ ADMIN_HTML = f"<html>{COMMON_HEAD}<body>" + NAV_BAR + DRAWER_HTML + """
                 <span class="alert-badge">{{ live_alerts_count }} ALERT{{ 's' if live_alerts_count > 1 else '' }}</span>
                 {% endif %}
             </a>
+            <button onclick="forceLogoutAll()" class="flex items-center gap-2 bg-red-500/15 border border-red-500/30 text-red-400 hover:bg-red-500/25 hover:border-red-500/50 px-4 py-2 rounded-xl font-bold text-xs uppercase tracking-wider transition-all">
+                <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                Force Logout All
+            </button>
             <div class="hidden md:flex items-center gap-4">
                 {% if live_ops %}{% for op in live_ops %}
                 <div class="flex items-center gap-2">
@@ -2040,6 +2082,22 @@ function filterSidebar() {
     document.querySelectorAll('.sidebar-btn').forEach(btn => {
         btn.style.display = btn.innerText.toLowerCase().includes(input) ? "flex" : "none";
     });
+}
+async function forceLogoutAll() {
+    if (!confirm('WARNING: This will immediately log out ALL operators from their devices. Are you sure?')) return;
+    try {
+        const res = await fetch('/force_logout_all', { method: 'POST' });
+        const data = await res.json();
+        if (data.ok) {
+            showToast(`✅ Force logged out ${data.count} operators`);
+            // Refresh live status display
+            setTimeout(() => location.reload(), 1500);
+        } else {
+            showToast('❌ Failed to force logout');
+        }
+    } catch(e) {
+        showToast('❌ Error: ' + e.message);
+    }
 }
 </script>
 """ + EDIT_MODALS_HTML + CHAT_HTML + """
