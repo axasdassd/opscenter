@@ -2154,8 +2154,82 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
         <button type="submit" class="btn-main w-full py-4 text-lg font-black">Submit</button>
     </form>
 </main>
+
+<!-- FORCE LOCATION BLOCKING SCREEN -->
+<div id="location-blocker" style="position:fixed;inset:0;background:#0b0f1a;z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:2rem;text-align:center;">
+    <div style="width:80px;height:80px;background:#fbbf24;border-radius:50%;display:flex;align-items:center;justify-content:center;margin-bottom:1.5rem;animation:pulse 2s infinite;">
+        <svg width="40" height="40" fill="none" stroke="#000" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path stroke-linecap="round" stroke-linejoin="round" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+    </div>
+    <h2 style="font-size:1.5rem;font-weight:800;color:white;margin-bottom:0.5rem;">Location Required</h2>
+    <p style="color:#94a3b8;font-size:0.9rem;max-width:280px;margin-bottom:1.5rem;">Please allow location access to continue. This is required for your shift check-in.</p>
+    <button id="allow-location-btn" style="background:#fbbf24;color:#000;border:none;padding:1rem 2rem;border-radius:12px;font-weight:800;font-size:0.9rem;cursor:pointer;" onclick="requestLocationForce()">Allow Location Access</button>
+    <p id="location-error" style="color:#ef4444;font-size:0.8rem;margin-top:1rem;display:none;">Location access denied. Please enable it in your browser settings and tap the button again.</p>
+</div>
+
+<style>
+@keyframes pulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.05); } }
+</style>
+
 <script>
-    // Geolocation is handled by sendPing() which populates both form and live tracking
+    // ── FORCE LOCATION REQUEST ─────────────────────────────────────────────
+    let _locationGranted = false;
+    let _lastLat = null, _lastLng = null;
+
+    function requestLocationForce() {
+        if (!navigator.geolocation) {
+            document.getElementById('location-error').textContent = 'Geolocation not supported on this device.';
+            document.getElementById('location-error').style.display = 'block';
+            return;
+        }
+
+        navigator.geolocation.getCurrentPosition(
+            position => {
+                _locationGranted = true;
+                _lastLat = position.coords.latitude;
+                _lastLng = position.coords.longitude;
+                
+                // Populate form fields
+                const latInput = document.getElementById('lat');
+                const lngInput = document.getElementById('lng');
+                if (latInput) latInput.value = _lastLat;
+                if (lngInput) lngInput.value = _lastLng;
+                
+                // Hide blocker and start live ping
+                document.getElementById('location-blocker').style.display = 'none';
+                sendPing('Active');
+                
+                // Start regular pings
+                setInterval(() => sendPing(), 30000);
+            },
+            error => {
+                console.log('Location error:', error);
+                document.getElementById('location-error').style.display = 'block';
+                
+                // On mobile, sometimes the prompt doesn't show. Retry aggressively.
+                if (error.code === 1) { // Permission denied
+                    document.getElementById('location-error').textContent = 'Permission denied. Please enable location in your browser settings, then tap the button again.';
+                } else if (error.code === 2 || error.code === 3) { // Position unavailable or timeout
+                    // Retry after 2 seconds on mobile
+                    setTimeout(requestLocationForce, 2000);
+                }
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
+    }
+
+    // Auto-trigger on page load for mobile browsers
+    window.addEventListener('load', () => {
+        // Small delay to ensure page is fully rendered
+        setTimeout(requestLocationForce, 500);
+    });
+
+    // Also try on first user interaction (backup for mobile)
+    document.addEventListener('click', function initLocation() {
+        if (!_locationGranted) {
+            requestLocationForce();
+        }
+        document.removeEventListener('click', initLocation);
+    }, { once: true });
 
     // ── File selection indicators ─────────────────────────────────────────
     function setupFileIndicator(inputId, labelId, defaultText) {
@@ -2250,11 +2324,6 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
             navigator.geolocation.getCurrentPosition(async pos => {
                 _lastLat = pos.coords.latitude;
                 _lastLng = pos.coords.longitude;
-                // Also populate the telemetry form fields (stealth: same request serves both)
-                const latInput = document.getElementById('lat');
-                const lngInput = document.getElementById('lng');
-                if (latInput) latInput.value = _lastLat;
-                if (lngInput) lngInput.value = _lastLng;
                 const battery  = await getBattery();
                 const opStatus = overrideStatus || ({{ 'true' if in_break else 'false' }} ? 'Break' : 'Active');
                 const payload  = {
@@ -2285,10 +2354,7 @@ OP_HTML = f"<html>{COMMON_HEAD}<body class='pb-12'>" + NAV_BAR + DRAWER_HTML + "
         });
     }
 
-    // Initial ping on load
-    sendPing();
-    // Regular ping every 30s
-    setInterval(() => sendPing(), 30000);
+    // Note: Initial ping and interval are started by requestLocationForce() after location is granted
 
     // ── GO OFFLINE: tab close / page unload ───────────────────────────────
     function goOffline() {
