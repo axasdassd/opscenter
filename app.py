@@ -716,6 +716,149 @@ def delete_eta(eta_id):
         db.session.commit()
     return redirect(url_for("admin"))
 
+@app.route("/manifest.json")
+def manifest():
+    return jsonify({
+        "name": "OpsCenter",
+        "short_name": "OpsCenter",
+        "description": "Tactical Operations Center - Field Management System",
+        "start_url": "/",
+        "display": "standalone",
+        "background_color": "#0b0f1a",
+        "theme_color": "#0b0f1a",
+        "orientation": "portrait",
+        "scope": "/",
+        "icons": [
+            {"src": "/static/icon-72.png", "sizes": "72x72", "type": "image/png"},
+            {"src": "/static/icon-96.png", "sizes": "96x96", "type": "image/png"},
+            {"src": "/static/icon-128.png", "sizes": "128x128", "type": "image/png"},
+            {"src": "/static/icon-144.png", "sizes": "144x144", "type": "image/png"},
+            {"src": "/static/icon-152.png", "sizes": "152x152", "type": "image/png"},
+            {"src": "/static/icon-192.png", "sizes": "192x192", "type": "image/png"},
+            {"src": "/static/icon-384.png", "sizes": "384x384", "type": "image/png"},
+            {"src": "/static/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"}
+        ],
+        "categories": ["business", "productivity"],
+        "screenshots": [
+            {"src": "/static/screenshot-wide.png", "sizes": "1280x720", "type": "image/png", "form_factor": "wide"},
+            {"src": "/static/screenshot-narrow.png", "sizes": "750x1334", "type": "image/png", "form_factor": "narrow"}
+        ]
+    })
+
+@app.route("/static/<path:filename>")
+def static_files(filename):
+    """Serve static files including PWA icons."""
+    import base64
+    from io import BytesIO
+
+    # Generate simple colored icon for PWA
+    icon_sizes = {
+        'icon-72.png': 72, 'icon-96.png': 96, 'icon-128.png': 128, 'icon-144.png': 144,
+        'icon-152.png': 152, 'icon-192.png': 192, 'icon-384.png': 384, 'icon-512.png': 512,
+        'favicon-16x16.png': 16, 'favicon-32x32.png': 32
+    }
+
+    if filename in icon_sizes:
+        size = icon_sizes[filename]
+        # Create a simple PNG with amber background and "O" letter
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            img = Image.new('RGB', (size, size), color=(251, 191, 36))  # #fbbf24
+            draw = ImageDraw.Draw(img)
+            # Try to draw an "O" in the center
+            try:
+                font = ImageFont.truetype("arial.ttf", int(size * 0.5))
+            except:
+                font = ImageFont.load_default()
+            text = "O"
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            x = (size - text_width) // 2
+            y = (size - text_height) // 2
+            draw.text((x, y), text, fill=(0, 0, 0), font=font)
+            img_io = BytesIO()
+            img.save(img_io, 'PNG')
+            img_io.seek(0)
+            return img_io.read(), 200, {'Content-Type': 'image/png'}
+        except ImportError:
+            # PIL not available, return simple SVG as fallback
+            svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}">
+                <rect width="100%" height="100%" fill="#fbbf24"/>
+                <text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle"
+                      font-size="{size*0.5}" font-weight="bold" fill="#000">O</text>
+            </svg>'''
+            return svg, 200, {'Content-Type': 'image/svg+xml'}
+
+    # Browser config for Windows tiles
+    if filename == 'browserconfig.xml':
+        xml = '''<?xml version="1.0" encoding="utf-8"?>
+<browserconfig>
+    <msapplication>
+        <tile>
+            <square150x150logo src="/static/icon-152.png"/>
+            <TileColor>#0b0f1a</TileColor>
+        </tile>
+    </msapplication>
+</browserconfig>'''
+        return xml, 200, {'Content-Type': 'application/xml'}
+
+    # Safari pinned tab icon
+    if filename == 'safari-pinned-tab.svg':
+        svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+            <circle cx="8" cy="8" r="7" fill="#fbbf24"/>
+            <text x="8" y="12" text-anchor="middle" font-size="10" font-weight="bold" fill="#000">O</text>
+        </svg>'''
+        return svg, 200, {'Content-Type': 'image/svg+xml'}
+
+    # Screenshots for PWA store
+    if filename in ['screenshot-wide.png', 'screenshot-narrow.png']:
+        try:
+            from PIL import Image, ImageDraw
+            is_wide = filename == 'screenshot-wide.png'
+            w, h = (1280, 720) if is_wide else (750, 1334)
+            img = Image.new('RGB', (w, h), color=(11, 15, 26))  # #0b0f1a
+            draw = ImageDraw.Draw(img)
+            # Draw "OpsCenter" text
+            draw.rectangle([w//4, h//3, w*3//4, h*2//3], fill=(22, 30, 45))
+            draw.text((w//2, h//2), "OpsCenter", fill=(251, 191, 36), anchor="mm")
+            img_io = BytesIO()
+            img.save(img_io, 'PNG')
+            img_io.seek(0)
+            return img_io.read(), 200, {'Content-Type': 'image/png'}
+        except:
+            return '', 404
+
+    return '', 404
+
+@app.route("/sw.js")
+def service_worker():
+    sw_code = """
+const CACHE_NAME = 'opscenter-v1';
+const urlsToCache = [
+    '/',
+    '/static/icon-192.png'
+];
+
+self.addEventListener('install', event => {
+    event.waitUntil(
+        caches.open(CACHE_NAME)
+            .then(cache => cache.addAll(urlsToCache))
+    );
+});
+
+self.addEventListener('fetch', event => {
+    event.respondWith(
+        caches.match(event.request)
+            .then(response => {
+                if (response) return response;
+                return fetch(event.request);
+            })
+    );
+});
+"""
+    return sw_code, 200, {'Content-Type': 'application/javascript'}
+
 @app.route("/force_logout_all", methods=["POST"])
 @admin_required
 def force_logout_all():
@@ -1367,6 +1510,18 @@ COMMON_HEAD = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#0b0f1a">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="OpsCenter">
+    <meta name="application-name" content="OpsCenter">
+    <meta name="msapplication-TileColor" content="#0b0f1a">
+    <meta name="msapplication-config" content="/static/browserconfig.xml">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/static/icon-192.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16x16.png">
+    <link rel="mask-icon" href="/static/safari-pinned-tab.svg" color="#fbbf24">
     <title>OpsCenter v3.5 | Tactical</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
@@ -1442,6 +1597,14 @@ COMMON_HEAD = """
         .new-dm-btn:hover { background: rgba(251,191,36,0.05); }
         .slack-badge { display: inline-flex; align-items: center; gap: 4px; background: rgba(74,144,74,0.15); border: 1px solid rgba(74,144,74,0.3); color: #4CAF50; border-radius: 6px; padding: 2px 7px; font-size: 0.6rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em; }
     </style>
+    <script>
+        // Register Service Worker for PWA install support
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js')
+                .then(reg => console.log('SW registered:', reg.scope))
+                .catch(err => console.log('SW registration failed:', err));
+        }
+    </script>
 </head>
 """
 
