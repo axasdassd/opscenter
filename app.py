@@ -220,12 +220,22 @@ def send_slack_dm(slack_user_id, text, blocks=None):
 
 
 def notify_slack(message, filename=None):
-    if not SLACK_NOTIFY_USER_ID:
+    slack_ids = [
+        SLACK_NOTIFY_USER_ID,
+        os.environ.get("SLACK_NOTIFY_USER_ID_2"),
+        os.environ.get("SLACK_NOTIFY_USER_ID_3")
+    ]
+    slack_ids = [sid for sid in slack_ids if sid]  # Remove empty ones
+    
+    if not slack_ids:
         return
+    
     if filename and filename != "placeholder.jpg" and os.path.exists(os.path.join(UPLOAD_FOLDER, filename)):
-        send_slack_dm_with_file(SLACK_NOTIFY_USER_ID, message, filename)
+        for slack_id in slack_ids:
+            send_slack_dm_with_file(slack_id, message, filename)
     else:
-        send_slack_dm(SLACK_NOTIFY_USER_ID, message)
+        for slack_id in slack_ids:
+            send_slack_dm(slack_id, message)
 
 
 def send_break_reminder(user_id, username, slack_user_id):
